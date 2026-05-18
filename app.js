@@ -3,9 +3,10 @@ const STORAGE_KEY = "tux-studio-os-prototype-v2";
 const orderStatuses = [
   "Missing",
   "Unprocessed",
-  "Ordered",
-  "At Tailor",
   "Ready",
+  "Fitting",
+  "At Tailor",
+  "Ready for collection",
   "Collected",
   "Cancelled",
 ];
@@ -262,7 +263,7 @@ const seedState = {
       },
       updated: "2026-04-30",
       notes: "Steam and bag before collection.",
-      history: ["Booked 20 Apr", "Ready 30 Apr"],
+      history: ["Booked 20 Apr", "Ready for collection 30 Apr"],
     },
     {
       id: "o3",
@@ -296,7 +297,7 @@ const seedState = {
       customerId: "c4",
       item: "Navy tux hire with shirt and shoes",
       due: "2026-05-27",
-      status: "Ordered",
+      status: "Fitting",
       tailor: "Not sent",
       total: 420,
       paid: 150,
@@ -314,7 +315,7 @@ const seedState = {
       },
       updated: "2026-04-26",
       notes: "Shoes size 10 reserved.",
-      history: ["Booked 26 Apr", "Ordered 26 Apr"],
+      history: ["Booked 26 Apr", "Fitting 26 Apr"],
     },
   ],
   inventory: [
@@ -327,6 +328,7 @@ const seedState = {
       qty: 3,
       alert: 2,
       committed: 1,
+      price: 220,
     },
     {
       id: "i2",
@@ -337,6 +339,7 @@ const seedState = {
       qty: 1,
       alert: 2,
       committed: 1,
+      price: 240,
     },
     {
       id: "i3",
@@ -347,6 +350,7 @@ const seedState = {
       qty: 8,
       alert: 4,
       committed: 3,
+      price: 55,
     },
     {
       id: "i4",
@@ -357,6 +361,7 @@ const seedState = {
       qty: 2,
       alert: 2,
       committed: 1,
+      price: 75,
     },
     {
       id: "i5",
@@ -367,6 +372,7 @@ const seedState = {
       qty: 12,
       alert: 5,
       committed: 4,
+      price: 25,
     },
   ],
   invoices: [
@@ -443,7 +449,11 @@ function normaliseInventoryState(sourceState) {
     ...order,
     status: normaliseOrderStatus(order.status),
     history: Array.isArray(order.history)
-      ? order.history.map((entry) => String(entry).replace(/\bMeasured\b/g, "Unprocessed"))
+      ? order.history.map((entry) =>
+          String(entry)
+            .replace(/\bMeasured\b/g, "Unprocessed")
+            .replace(/\bOrdered\b/g, "Fitting"),
+        )
       : [],
   }));
   nextState.inventory = (sourceState.inventory || []).flatMap((item) => {
@@ -454,6 +464,7 @@ function normaliseInventoryState(sourceState) {
         variationType: item.variationType || (item.size && item.size !== "-" ? "Size" : "Colour"),
         variationValue: item.variationValue || (item.size && item.size !== "-" ? item.size : item.color || "-"),
         material: item.material || item.style || "",
+        price: Number(item.price || 0),
       };
     }
     return String(item.size)
@@ -469,6 +480,7 @@ function normaliseInventoryState(sourceState) {
         variationValue: size,
         size,
         material: item.material || item.style || "",
+        price: Number(item.price || 0),
       }));
   });
   return nextState;
@@ -476,6 +488,7 @@ function normaliseInventoryState(sourceState) {
 
 function normaliseOrderStatus(status) {
   if (status === "Measured" || status === "Booked") return "Unprocessed";
+  if (status === "Ordered") return "Fitting";
   return orderStatuses.includes(status) ? status : "Unprocessed";
 }
 
@@ -742,6 +755,8 @@ function renderModal() {
   if (state.modal.type === "staff-booking") return renderStaffBookingModal();
   if (state.modal.type === "inventory") return renderInventoryModal();
   if (state.modal.type === "dashboard-metric") return renderDashboardMetricModal();
+  if (state.modal.type === "order-detail") return renderOrderDetailModal();
+  if (state.modal.type === "order-stage") return renderOrderStageModal();
   return "";
 }
 
@@ -751,53 +766,61 @@ function renderNewOrderModal() {
   const customerValue = selectedCustomer ? selectedCustomer.id : "new";
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
-      <section class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="new-order-title">
-        <div class="modal-header">
-          <div>
-            <p class="page-kicker">Order and invoice</p>
-            <h3 id="new-order-title" class="modal-title">Create a new order</h3>
-            <p class="panel-subtitle">Capture measurements, quotation, deposit or full payment, and the fitting appointment before they leave.</p>
-          </div>
+      <section class="modal-card wide order-invoice-modal" role="dialog" aria-modal="true" aria-labelledby="new-order-title">
+        <div class="modal-header invoice-modal-header">
           <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+          <div>
+            <h3 id="new-order-title" class="modal-title">Invoice</h3>
+            <p class="panel-subtitle">Create the order, invoice, fitting, and stock commitments.</p>
+          </div>
         </div>
-        <form id="new-order-form" class="form-grid">
-          <div class="form-section-title full">Customer details</div>
-          <div class="field full">
-            <label for="order-customer">Customer</label>
-            <select id="order-customer" name="customerId" data-input="order-customer">
-              <option value="new" ${customerValue === "new" ? "selected" : ""}>New customer</option>
-              ${state.customers
-                .map(
-                  (customer) => `
-                    <option value="${customer.id}" ${customer.id === customerValue ? "selected" : ""}>
-                      ${customer.name} - ${customer.phone}
-                    </option>
-                  `,
-                )
-                .join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label for="order-customer-name">Customer name</label>
-            <input id="order-customer-name" name="name" required value="${escapeAttribute(selectedCustomer?.name || "")}" placeholder="Full name" />
-          </div>
-          <div class="field">
-            <label for="order-customer-phone">Phone</label>
-            <input id="order-customer-phone" name="phone" required value="${escapeAttribute(selectedCustomer?.phone || "")}" placeholder="Mobile number" />
-          </div>
-          <div class="field">
-            <label for="order-customer-email">Email</label>
-            <input id="order-customer-email" name="email" type="email" value="${escapeAttribute(selectedCustomer?.email || "")}" placeholder="Email address" />
-          </div>
-          <div class="field">
-            <label for="order-event">Event</label>
-            <input id="order-event" name="eventName" value="${escapeAttribute(selectedCustomer?.event || "")}" placeholder="Wedding - 22 Jun 2026" />
-          </div>
-          <div class="field full">
-            <label for="order-address">Home address</label>
-            <textarea id="order-address" name="address" required placeholder="Customer home address">${escapeHtml(selectedCustomer?.address || "")}</textarea>
-          </div>
-          <div class="nested-form-panel field full">
+        <form id="new-order-form" class="invoice-composer">
+          <div class="invoice-scroll-body">
+            <section class="invoice-section">
+            <div class="invoice-section-head">
+              <h4>Customer</h4>
+            </div>
+            <div class="invoice-customer-card">
+              <div class="field full">
+                <label for="order-customer">Customer</label>
+                <select id="order-customer" name="customerId" data-input="order-customer">
+                  <option value="new" ${customerValue === "new" ? "selected" : ""}>New customer</option>
+                  ${state.customers
+                    .map(
+                      (customer) => `
+                        <option value="${customer.id}" ${customer.id === customerValue ? "selected" : ""}>
+                          ${customer.name} - ${customer.phone}
+                        </option>
+                      `,
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="invoice-compact-grid">
+                <div class="field">
+                  <label for="order-customer-name">Customer name</label>
+                  <input id="order-customer-name" name="name" required value="${escapeAttribute(selectedCustomer?.name || "")}" placeholder="Full name" />
+                </div>
+                <div class="field">
+                  <label for="order-customer-phone">Phone</label>
+                  <input id="order-customer-phone" name="phone" required value="${escapeAttribute(selectedCustomer?.phone || "")}" placeholder="Mobile number" />
+                </div>
+                <div class="field">
+                  <label for="order-customer-email">Email</label>
+                  <input id="order-customer-email" name="email" type="email" value="${escapeAttribute(selectedCustomer?.email || "")}" placeholder="Email address" />
+                </div>
+                <div class="field">
+                  <label for="order-event">Event</label>
+                  <input id="order-event" name="eventName" value="${escapeAttribute(selectedCustomer?.event || "")}" placeholder="Wedding - 22 Jun 2026" />
+                </div>
+              </div>
+              <div class="field full">
+                <label for="order-address">Home address</label>
+                <textarea id="order-address" name="address" required placeholder="Customer home address">${escapeHtml(selectedCustomer?.address || "")}</textarea>
+              </div>
+            </div>
+            </section>
+            <section class="invoice-section">
             <div class="row wrap">
               <div>
                 <h4 class="panel-title">Measurements</h4>
@@ -816,42 +839,54 @@ function renderNewOrderModal() {
                 )
                 .join("")}
             </div>
-          </div>
-          <div class="form-section-title full">Order details</div>
-          <div class="field full">
-            <label for="order-item">What are they ordering?</label>
-            <select id="order-item" name="item" required data-input="order-item">
-              ${inventoryOrderOptions()}
-              <option value="__custom">Custom order - not in inventory</option>
-            </select>
-          </div>
+            </section>
+            <section class="invoice-section">
+            <div class="invoice-section-head">
+              <h4>Items</h4>
+              <span class="meta">Search, then tap items to add them.</span>
+            </div>
+            <div class="field full">
+              <label for="order-item-search">Search items</label>
+              <input id="order-item-search" type="search" data-order-item-search placeholder="Type jacket, shirt, shoes, size, colour..." autocomplete="off" />
+            </div>
+            <div class="invoice-item-picker" data-input="order-item">
+              ${renderOrderItemPicker()}
+            </div>
           <div class="field full" data-custom-order-field hidden>
             <label for="order-custom-item">Custom order details</label>
             <input id="order-custom-item" name="customItem" placeholder="Custom black peak lapel tuxedo, special cloth, bespoke request..." />
           </div>
-          <div class="field">
-            <label for="order-due">Due date</label>
-            <input id="order-due" name="due" type="date" required value="2026-06-30" />
+          <div class="field full">
+            <div class="selection-summary" data-order-selection-summary>
+              <p class="meta">No items selected yet.</p>
+            </div>
           </div>
-          <div class="field">
-            <label for="order-total">Quotation / invoice total</label>
-            <input id="order-total" name="total" type="number" min="0" step="1" required value="650" />
-          </div>
-          <div class="field">
-            <label for="order-paid">Deposit / paid today</label>
-            <input id="order-paid" name="paid" type="number" min="0" step="1" value="0" />
-          </div>
-          <div class="field">
-            <label for="order-payment-method">Payment method</label>
-            <select id="order-payment-method" name="method">
-              <option>Not paid</option>
-              <option>Card deposit</option>
-              <option>Bank transfer</option>
-              <option>Cash deposit</option>
-              <option>Paid in full</option>
-            </select>
-          </div>
-          <div class="nested-form-panel field full">
+            <div class="invoice-compact-grid">
+              <div class="field">
+                <label for="order-due">Due date</label>
+                <input id="order-due" name="due" type="date" required value="2026-06-30" />
+              </div>
+              <div class="field">
+                <label for="order-total">Invoice total</label>
+                <input id="order-total" name="total" type="number" min="0" step="1" required value="650" data-order-total />
+              </div>
+              <div class="field">
+                <label for="order-paid">Deposit / paid today</label>
+                <input id="order-paid" name="paid" type="number" min="0" step="1" value="0" data-order-paid />
+              </div>
+              <div class="field">
+                <label for="order-payment-method">Payment method</label>
+                <select id="order-payment-method" name="method">
+                  <option>Not paid</option>
+                  <option>Card deposit</option>
+                  <option>Bank transfer</option>
+                  <option>Cash deposit</option>
+                  <option>Paid in full</option>
+                </select>
+              </div>
+            </div>
+            </section>
+            <section class="invoice-section">
             <div>
               <h4 class="panel-title">Book their fitting</h4>
               <p class="panel-subtitle">This creates the next appointment and sends the same confirmation/reminder flow.</p>
@@ -866,16 +901,14 @@ function renderNewOrderModal() {
                 <input id="order-fitting-time" name="fittingTime" type="time" value="12:00" />
               </div>
             </div>
-          </div>
-          <div class="field full">
-            <label for="order-notes">Order notes</label>
-            <textarea id="order-notes" name="notes" placeholder="Alterations, fit preference, fabric, collection notes"></textarea>
-          </div>
-          <div class="form-section-title full">Staff and approval</div>
-          <div class="nested-form-panel field full">
+            </section>
+            <section class="invoice-section">
+            <div class="field full">
+              <label for="order-notes">Order notes</label>
+              <textarea id="order-notes" name="notes" placeholder="Alterations, fit preference, fabric, collection notes"></textarea>
+            </div>
             <div>
-              <h4 class="panel-title">Final check</h4>
-              <p class="panel-subtitle">Confirm who made the sale and ask the customer to approve the quotation, measurements, order details, and payment terms.</p>
+              <h4 class="panel-title">Approval</h4>
             </div>
             <div class="form-grid">
               <div class="field">
@@ -894,10 +927,15 @@ function renderNewOrderModal() {
                 <span>Customer has signed and approved this order.</span>
               </label>
             </div>
+            </section>
           </div>
-          <div class="modal-actions">
+          <div class="invoice-save-bar">
+            <div>
+              <span>Amount due</span>
+              <strong data-amount-due>${money(650)}</strong>
+            </div>
             <button class="ghost-button" type="button" data-action="close-modal">Cancel</button>
-            <button class="button gold" type="submit">${icon("invoice")} Create order, invoice and fitting</button>
+            <button class="button gold" type="submit">${icon("invoice")} Save</button>
           </div>
         </form>
       </section>
@@ -910,10 +948,45 @@ function inventoryOrderOptions() {
   return items
     .map((item) => {
       const available = inventoryAvailable(item);
-      const label = `${inventoryOrderLabel(item)} (${available} available${available <= 0 ? " - missing order" : ""})`;
+      const label = `${inventoryOrderLabel(item)} • ${money(inventoryPrice(item))} (${available} available${available <= 0 ? " - missing order" : ""})`;
       return `<option value="${escapeAttribute(item.id)}">${label}</option>`;
     })
     .join("");
+}
+
+function renderOrderItemPicker() {
+  const items = Array.isArray(state.inventory) ? state.inventory : [];
+  return `
+    <div class="invoice-item-list">
+      ${items
+        .map((item) => {
+          const available = inventoryAvailable(item);
+          return `
+            <label class="invoice-item-row" for="order-item-${item.id}" data-item-search-text="${escapeAttribute(`${inventoryOrderLabel(item)} ${item.category || ""} ${item.color || ""} ${item.size || ""} ${item.material || ""}`.toLowerCase())}" hidden>
+              <input id="order-item-${item.id}" name="items" type="checkbox" value="${escapeAttribute(item.id)}" data-order-item-choice />
+              <span class="invoice-item-icon">${icon("invoice")}</span>
+              <span>
+                <strong>${inventoryParentName(item)}</strong>
+                <em>${inventoryVariationLabel(item)}${item.color ? ` • ${item.color}` : ""}</em>
+                <small>${available} available${available <= 0 ? " • Missing order" : ""}</small>
+              </span>
+              <b>${money(inventoryPrice(item))}</b>
+            </label>
+          `;
+        })
+        .join("")}
+      <label class="invoice-item-row" for="order-item-custom" data-item-search-text="custom order bespoke manual special cloth" hidden>
+        <input id="order-item-custom" name="items" type="checkbox" value="__custom" data-order-item-choice />
+        <span class="invoice-item-icon">${icon("plus")}</span>
+        <span>
+          <strong>Custom order</strong>
+          <em>Special cloth, bespoke item, or manual invoice line</em>
+        </span>
+        <b>Manual</b>
+      </label>
+      <p class="meta invoice-item-empty" data-item-search-empty>Start typing to find inventory items.</p>
+    </div>
+  `;
 }
 
 function staffSelectOptions() {
@@ -1346,6 +1419,10 @@ function renderInventoryModal() {
             </select>
           </div>
           <div class="field">
+            <label for="inventory-price">Price</label>
+            <input id="inventory-price" name="price" type="number" min="0" step="1" required value="0" />
+          </div>
+          <div class="field">
             <label for="inventory-variation-type">Variation by</label>
             <select id="inventory-variation-type" name="variationType" required>
               <option value="Size">Size</option>
@@ -1748,7 +1825,7 @@ function renderFollowUpWorkflowResults() {
 
 function renderWantsToBuyResults() {
   const activeOrders = state.orders
-    .filter((order) => !["Collected", "Cancelled", "Ready"].includes(order.status))
+    .filter((order) => !["Collected", "Cancelled", "Ready for collection"].includes(order.status))
     .slice()
     .sort(sortByClosestDueDate);
   return activeOrders
@@ -1897,6 +1974,8 @@ function renderCustomers() {
           </div>
         </section>
         <div class="divider"></div>
+        ${renderCustomerFittings(selected, orders)}
+        <div class="divider"></div>
         <h3 class="panel-title">Staff notes</h3>
         <p class="page-copy">${selected.notes}</p>
       </div>
@@ -1904,14 +1983,110 @@ function renderCustomers() {
   `;
 }
 
+function renderCustomerFittings(customer, orders) {
+  const fittingOrders = orders
+    .filter((order) => !["Collected", "Cancelled"].includes(order.status))
+    .sort(sortByClosestDueDate);
+  return `
+    <section class="customer-fitting-section">
+      <div class="panel-header compact-panel-header">
+        <div>
+          <h3 class="panel-title">Fitting</h3>
+          <p class="panel-subtitle">Record what was checked or altered at each fitting.</p>
+        </div>
+      </div>
+      <div class="list">
+        ${
+          fittingOrders
+            .map((order) => renderFittingForm(customer, order))
+            .join("") || emptyState("No active orders need fitting notes yet.")
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderFittingForm(customer, order) {
+  const record = order.fittingRecord || {};
+  return `
+    <form class="item-card fitting-record-card" data-fitting-form="${order.id}">
+      <div class="row wrap">
+        <div>
+          <p class="name">${order.number} • ${order.item}</p>
+          <p class="meta">${customer.name} • Due ${formatDate(order.due)}${order.fittingDate ? ` • Fitting ${formatDate(order.fittingDate)}` : ""}</p>
+        </div>
+        <span class="status ${statusClass(order.status)}">${order.status}</span>
+      </div>
+      <div class="fitting-checklist">
+        ${fittingChecklistSections()
+          .map(
+            (section) => `
+              <fieldset class="fitting-check-group">
+                <legend>${section.label}</legend>
+                ${section.items
+                  .map(
+                    (item) => `
+                      <label class="check-field" for="${order.id}-${item.id}">
+                        <input id="${order.id}-${item.id}" name="${item.id}" type="checkbox" ${record[item.id] ? "checked" : ""} />
+                        <span>${item.label}</span>
+                      </label>
+                    `,
+                  )
+                  .join("")}
+              </fieldset>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="field full">
+        <label for="${order.id}-fitting-notes">Fitting notes</label>
+        <textarea id="${order.id}-fitting-notes" name="notes" placeholder="Record what was done, what still needs adjusting, and next action.">${escapeHtml(record.notes || "")}</textarea>
+      </div>
+      <div class="row wrap">
+        <p class="meta">${record.updated ? `Last saved ${formatDate(record.updated)} by ${record.updatedBy || "Staff"}` : "No fitting notes saved yet."}</p>
+        <button class="button gold" type="submit">${icon("check")} Save fitting</button>
+      </div>
+    </form>
+  `;
+}
+
+function fittingChecklistSections() {
+  return [
+    {
+      label: "Jacket",
+      items: [
+        { id: "jacketSleeveLength", label: "Sleeve length" },
+        { id: "jacketSleeveTaper", label: "Sleeve taper" },
+        { id: "jacketWaistTaper", label: "Waist taper" },
+        { id: "jacketLength", label: "Jacket length" },
+      ],
+    },
+    {
+      label: "Trousers",
+      items: [
+        { id: "trouserLength", label: "Length" },
+        { id: "trouserTaper", label: "Taper" },
+        { id: "trouserWaist", label: "Waist" },
+      ],
+    },
+    {
+      label: "Shirt",
+      items: [
+        { id: "shirtWaistTaper", label: "Waist taper" },
+        { id: "shirtSleeveLength", label: "Sleeve length" },
+      ],
+    },
+  ];
+}
+
 function renderOrders() {
-  const columns = ["Missing", "Unprocessed", "Ordered", "At Tailor", "Ready"];
+  const columns = ["Missing", "Unprocessed", "Ready", "Fitting", "At Tailor", "Ready for collection"];
   return `
     <section class="panel">
       <div class="panel-header">
         <div>
           <h3 class="panel-title">Live order board</h3>
-          <p class="panel-subtitle">Workflow moves from urgent missing orders to unprocessed, ordered, tailor, and ready.</p>
+          <p class="panel-subtitle">Workflow checks the 3-month window, allocates stock, then moves through fitting, tailoring, and collection.</p>
         </div>
         <button class="button gold" data-action="new-order">${icon("plus")} Create order</button>
       </div>
@@ -1922,8 +2097,13 @@ function renderOrders() {
             return `
               <div class="board-column ${status === "Missing" ? "urgent-column" : ""}">
                 <h4 class="board-title">${status}<span>${orders.length}</span></h4>
+                <button class="stage-summary-card" data-action="open-order-stage" data-status="${escapeAttribute(status)}">
+                  <span>${status}</span>
+                  <strong>${orders.length}</strong>
+                  <small>${orders.length === 1 ? "order in this stage" : "orders in this stage"}</small>
+                </button>
                 <div class="list">
-                  ${orders.map((order) => orderCard(order, true, { expandable: true, compactCollapsed: true })).join("") || emptyState("No orders")}
+                  ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders")}
                 </div>
               </div>
             `;
@@ -1942,11 +2122,131 @@ function renderOrders() {
         ${state.orders
           .slice()
           .sort(sortByClosestDueDate)
-          .map((order) => orderCard(order, true, { expandable: true, compactCollapsed: true }))
+          .map((order) =>
+            orderCard(order, true, {
+              expandable: true,
+              compactCollapsed: true,
+              action: "toggle-all-order",
+              expandedOrderId: state.allOrdersExpandedOrderId,
+            }),
+          )
           .join("")}
       </div>
     </section>
+    ${renderWeeklyAlterationTotals()}
   `;
+}
+
+function renderOrderStageModal() {
+  const status = state.modal.status || "Orders";
+  const orders = state.orders.filter((order) => order.status === status).sort(sortByClosestDueDate);
+  return `
+    <div class="modal-backdrop" role="presentation" data-action="close-modal">
+      <section class="modal-card dashboard-metric-modal" role="dialog" aria-modal="true" aria-labelledby="order-stage-title">
+        <div class="modal-header">
+          <div>
+            <p class="page-kicker">Order stage</p>
+            <h3 id="order-stage-title" class="modal-title">${status}</h3>
+            <p class="panel-subtitle">${orders.length} ${orders.length === 1 ? "order" : "orders"} sorted by earliest due date.</p>
+          </div>
+          <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+        </div>
+        <div class="list">
+          ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders in this stage.")}
+        </div>
+        <div class="modal-actions">
+          <button class="ghost-button" data-action="close-modal">Close</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderWeeklyAlterationTotals() {
+  const weeks = weeklyAlterationTotals();
+  return `
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <div>
+          <h3 class="panel-title">Weekly alteration jobs</h3>
+          <p class="panel-subtitle">Counts checked fitting items only for orders currently at tailor.</p>
+        </div>
+      </div>
+      ${
+        weeks.length
+          ? `<div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Week</th>
+                    <th>Alteration job</th>
+                    <th>Jobs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${weeks
+                    .map((week) =>
+                      week.jobs
+                        .map(
+                          (job, index) => `
+                            <tr>
+                              <td>${index === 0 ? `<strong>${week.label}</strong><br><span class="meta">${week.total} total job${week.total === 1 ? "" : "s"}</span>` : ""}</td>
+                              <td>${job.label}</td>
+                              <td><strong>${job.count}</strong></td>
+                            </tr>
+                          `,
+                        )
+                        .join(""),
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : emptyState("No at-tailor orders have fitting checklist jobs recorded yet.")
+      }
+    </section>
+  `;
+}
+
+function weeklyAlterationTotals() {
+  const jobLabels = fittingChecklistSections()
+    .flatMap((section) => section.items.map((item) => [item.id, `${section.label} - ${item.label}`]));
+  const labelMap = Object.fromEntries(jobLabels);
+  const weeks = new Map();
+
+  (state.orders || []).forEach((order) => {
+    if (order.status !== "At Tailor") return;
+    const record = order.fittingRecord;
+    if (!record) return;
+    const checkedJobs = jobLabels.filter(([id]) => record[id]);
+    if (!checkedJobs.length) return;
+    const jobDate = order.fittingDate || record.updated || DEMO_TODAY;
+    const weekStart = weekDates(jobDate)[0];
+    if (!weeks.has(weekStart)) {
+      weeks.set(weekStart, {
+        weekStart,
+        label: `${formatDate(weekStart)} - ${formatDate(addDays(weekStart, 6))}`,
+        counts: {},
+      });
+    }
+    const week = weeks.get(weekStart);
+    checkedJobs.forEach(([id]) => {
+      week.counts[id] = (week.counts[id] || 0) + 1;
+    });
+  });
+
+  return [...weeks.values()]
+    .sort((a, b) => b.weekStart.localeCompare(a.weekStart))
+    .map((week) => {
+      const jobs = Object.entries(week.counts)
+        .map(([id, count]) => ({ id, label: labelMap[id] || titleCase(id), count }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      return {
+        ...week,
+        jobs,
+        total: jobs.reduce((sum, job) => sum + job.count, 0),
+      };
+    });
 }
 
 function renderCommunications() {
@@ -2153,6 +2453,7 @@ function inventoryGroup(group) {
                             <th>Variation</th>
                             <th>Colour</th>
                             <th>Material / detail</th>
+                            <th>Price</th>
                             <th>Qty</th>
                             <th>Committed</th>
                             <th>Available</th>
@@ -2181,6 +2482,9 @@ function inventoryRow(item) {
       <td>${item.color}</td>
       <td>${item.material || item.style || "-"}</td>
       <td class="amount">
+        <input class="stock-price-input" data-stock-price="${item.id}" type="number" min="0" step="1" value="${inventoryPrice(item)}" aria-label="Price for ${item.item}" />
+      </td>
+      <td class="amount">
         <div class="stock-stepper" aria-label="Update stock for ${item.item}">
           <button class="icon-button" data-action="stock-minus" data-id="${item.id}" title="Decrease stock">${icon("minus")}</button>
           <input class="stock-qty-input" data-stock-qty="${item.id}" type="number" min="0" step="1" value="${item.qty}" aria-label="Stock quantity for ${item.item}" />
@@ -2188,7 +2492,7 @@ function inventoryRow(item) {
         </div>
       </td>
       <td>${item.committed}</td>
-      <td>${Math.max(item.qty - item.committed, 0)}</td>
+      <td>${inventoryAvailable(item)}</td>
       <td>
         <input class="stock-qty-input" data-stock-alert="${item.id}" type="number" min="0" step="1" value="${item.alert}" aria-label="Low stock alert for ${item.item}" title="Low stock alert" />
       </td>
@@ -2224,22 +2528,30 @@ function inventoryAvailable(item) {
   return Math.max(Number(item.qty || 0) - manualCommitted - reservedOrders, 0);
 }
 
+function inventoryPrice(item) {
+  return Math.max(0, Number(item?.price || 0));
+}
+
 function selectedInventoryItem(value) {
   const items = Array.isArray(state.inventory) ? state.inventory : [];
   return items.find((item) => item.id === value) || items.find((item) => inventoryOrderLabel(item) === value) || null;
 }
 
 function stockOrdersForItem(itemId) {
-  return stockHoldingOrdersForItem(itemId).filter((order) => ["Missing", "Unprocessed", "Ordered"].includes(order.status));
+  return stockHoldingOrdersForItem(itemId).filter((order) => ["Missing", "Unprocessed", "Ready"].includes(order.status));
 }
 
 function stockHoldingOrdersForItem(itemId) {
   return (state.orders || []).filter(
     (order) =>
-      order.inventoryItemId === itemId &&
+      orderUsesInventoryItem(order, itemId) &&
       !["Collected", "Cancelled"].includes(order.status) &&
       order.stockStatus !== "Custom order",
   );
+}
+
+function orderUsesInventoryItem(order, itemId) {
+  return order.inventoryItemId === itemId || (order.inventoryItems || []).some((item) => item.id === itemId);
 }
 
 function manualCommittedForItem(item) {
@@ -2295,15 +2607,18 @@ function allocateStockForItem(item, options = {}) {
     const previousStockStatus = order.stockStatus;
     if (!isInStockAllocationWindow(order)) {
       order.stockStatus = "Future allocation";
-      if (previousStockStatus !== order.stockStatus) changed = true;
+      updateOrderInventoryLineStatus(order, item.id, "Future allocation");
+      if (["Missing", "Ready"].includes(order.status)) order.status = "Unprocessed";
+      if (previousStatus !== order.status || previousStockStatus !== order.stockStatus) changed = true;
       return;
     }
 
     if (allocatedIds.has(order.id)) {
       allocated += 1;
       order.stockStatus = "Reserved";
+      updateOrderInventoryLineStatus(order, item.id, "Reserved");
       order.stockAllocatedDate = stockAllocationDate();
-      if (order.status === "Missing") order.status = "Unprocessed";
+      if (["Missing", "Unprocessed"].includes(order.status)) order.status = "Ready";
       if (previousStatus !== order.status || previousStockStatus !== order.stockStatus) {
         changed = true;
         if (previousStockStatus !== "Reserved") newlyAllocated += 1;
@@ -2317,7 +2632,8 @@ function allocateStockForItem(item, options = {}) {
 
     waiting += 1;
     order.stockStatus = "Missing";
-    if (order.status === "Unprocessed") order.status = "Missing";
+    updateOrderInventoryLineStatus(order, item.id, "Missing");
+    if (["Unprocessed", "Ready"].includes(order.status)) order.status = "Missing";
     if (previousStatus !== order.status || previousStockStatus !== order.stockStatus) {
       changed = true;
       if (addHistory) {
@@ -2328,6 +2644,18 @@ function allocateStockForItem(item, options = {}) {
   });
 
   return { allocated, newlyAllocated, waiting, changed };
+}
+
+function updateOrderInventoryLineStatus(order, itemId, status) {
+  if (!Array.isArray(order.inventoryItems)) return;
+  const line = order.inventoryItems.find((item) => item.id === itemId);
+  if (line) line.stockStatus = status;
+  const statuses = order.inventoryItems.map((item) => item.stockStatus).filter(Boolean);
+  if (!statuses.length) return;
+  if (statuses.includes("Missing")) order.stockStatus = "Missing";
+  else if (statuses.every((itemStatus) => itemStatus === "Reserved")) order.stockStatus = "Reserved";
+  else if (statuses.every((itemStatus) => itemStatus === "Future allocation")) order.stockStatus = "Future allocation";
+  else order.stockStatus = "Part allocated";
 }
 
 function inventoryGroupName(item) {
@@ -2474,6 +2802,11 @@ function orderStaffName(order) {
 }
 
 function orderStockMeta(order) {
+  if (Array.isArray(order?.inventoryItems) && order.inventoryItems.length > 1) {
+    return order.inventoryItems
+      .map((line) => `${line.label} (${line.stockStatus || "Pending"})`)
+      .join("; ");
+  }
   if (!order?.inventoryItemId) return order?.stockStatus === "Custom order" ? "Custom order" : "";
   const item = state.inventory.find((stock) => stock.id === order.inventoryItemId);
   if (!item) return order.stockStatus || "";
@@ -2872,17 +3205,21 @@ function orderCard(order, editable = false, options = {}) {
   const paidPercent = order.total > 0 ? Math.round((order.paid / order.total) * 100) : 0;
   const halfPaymentDue = Math.max(Math.ceil(order.total / 2) - order.paid, 0);
   const expandable = Boolean(options.expandable);
-  const expandedOrderId = state.modal?.expandedOrderId || state.expandedOrderId;
-  const expanded = expandable && expandedOrderId === order.id;
+  const forceExpanded = Boolean(options.forceExpanded);
+  const expandedOrderId = options.expandedOrderId || state.modal?.expandedOrderId || state.expandedOrderId;
+  const expanded = forceExpanded || (expandable && expandedOrderId === order.id);
   const compactCollapsed = Boolean(options.compactCollapsed) && !expanded;
   const invoice = state.invoices.find((item) => item.orderId === order.id);
   const payments = invoicePayments(invoice);
   const measurements = orderMeasurements(order);
   const depositReminder = depositReminderInfo(order);
   const stockMeta = orderStockMeta(order);
+  const inlineAction = options.action || "toggle-order";
+  const cardAction = options.popupOnOpen ? "open-order-detail" : inlineAction;
+  const cardLabel = options.popupOnOpen ? `Open ${order.number} details` : `Show ${order.number} details`;
   if (compactCollapsed) {
     return `
-      <article class="item-card clickable-card compact-order-card" data-action="toggle-order" data-id="${order.id}" tabindex="0" role="button" aria-label="Show ${order.number} details">
+      <article class="item-card clickable-card compact-order-card" data-action="${cardAction}" data-id="${order.id}" tabindex="0" role="button" aria-label="${cardLabel}">
         <div class="row wrap">
           <div>
             <p class="name">${customer.name}</p>
@@ -2893,8 +3230,11 @@ function orderCard(order, editable = false, options = {}) {
       </article>
     `;
   }
+  const cardAttributes = forceExpanded
+    ? ""
+    : `data-action="${expandable ? inlineAction : "open-customer"}" data-id="${expandable ? order.id : customer.id}" tabindex="0" role="button" aria-label="${expandable ? `Show ${order.number} details` : `Open ${customer.name} customer profile`}"`;
   return `
-    <article class="item-card clickable-card ${expanded ? "expanded-order" : ""}" data-action="${expandable ? "toggle-order" : "open-customer"}" data-id="${expandable ? order.id : customer.id}" tabindex="0" role="button" aria-label="${expandable ? `Show ${order.number} details` : `Open ${customer.name} customer profile`}">
+    <article class="item-card ${forceExpanded ? "" : "clickable-card"} ${expanded ? "expanded-order" : ""}" ${cardAttributes}>
       <div class="row wrap">
         <div>
           <p class="name">${order.number} • ${customer.name}</p>
@@ -3020,6 +3360,38 @@ function orderCard(order, editable = false, options = {}) {
           : ""
       }
     </article>
+  `;
+}
+
+function renderOrderDetailModal() {
+  const order = state.orders.find((item) => item.id === state.modal.orderId);
+  if (!order) return "";
+  const customer = getCustomer(order.customerId);
+  return `
+    <div class="modal-backdrop" role="presentation" data-action="close-modal">
+      <section class="modal-card wide order-detail-modal" role="dialog" aria-modal="true" aria-labelledby="order-detail-title">
+        <div class="modal-header">
+          <div>
+            <p class="page-kicker">Order file</p>
+            <h3 id="order-detail-title" class="modal-title">${order.number} • ${customer.name}</h3>
+            <p class="panel-subtitle">${order.item} • Due ${formatDate(order.due)}</p>
+          </div>
+          <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close order popup">×</button>
+        </div>
+        <div class="list">
+          ${orderCard(order, true, { expandable: true, forceExpanded: true })}
+          <section class="item-card fitting-record-panel">
+            <div class="panel-header compact-panel-header">
+              <div>
+                <h3 class="panel-title">Fitting</h3>
+                <p class="panel-subtitle">Record fitting notes and checklist items for this order.</p>
+              </div>
+            </div>
+            ${renderFittingForm(customer, order)}
+          </section>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -3469,6 +3841,11 @@ function bindEvents() {
     input.addEventListener("change", () => updateStockAlert(input.dataset.stockAlert, input.value));
   });
 
+  document.querySelectorAll("[data-stock-price]").forEach((input) => {
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", () => updateStockPrice(input.dataset.stockPrice, input.value));
+  });
+
   document.querySelectorAll("[data-calendar-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.calendarMode = button.dataset.calendarMode;
@@ -3526,9 +3903,22 @@ function bindEvents() {
 
   const orderItemSelect = document.querySelector("[data-input='order-item']");
   if (orderItemSelect) {
-    orderItemSelect.addEventListener("change", () => toggleCustomOrderField(orderItemSelect.value));
-    toggleCustomOrderField(orderItemSelect.value);
+    orderItemSelect.addEventListener("change", () => updateOrderSelectionSummary());
+    updateOrderSelectionSummary();
   }
+
+  const itemSearchInput = document.querySelector("[data-order-item-search]");
+  if (itemSearchInput) {
+    itemSearchInput.addEventListener("input", () => filterOrderItemPicker(itemSearchInput.value));
+    filterOrderItemPicker(itemSearchInput.value);
+  }
+
+  document.querySelectorAll("[data-order-total], [data-order-paid]").forEach((input) => {
+    input.addEventListener("input", () => {
+      if (input.matches("[data-order-total]")) input.dataset.manualTotal = "true";
+      updateOrderInvoiceSummary();
+    });
+  });
 
   document.querySelectorAll("form [data-booking-type], form [data-booking-date], form [data-booking-order]").forEach((field) => {
     field.addEventListener("change", () => updateBookingAvailability(field.closest("form")));
@@ -3568,6 +3958,8 @@ function bindEvents() {
       form.addEventListener("submit", handleCustomCommsSubmit);
     } else if (form.id === "template-add-form") {
       form.addEventListener("submit", handleTemplateAddSubmit);
+    } else if (form.dataset.fittingForm) {
+      form.addEventListener("submit", handleFittingRecordSubmit);
     } else if (form.dataset.templateForm) {
       form.addEventListener("submit", handleTemplateEditSubmit);
     } else if (form.id === "inventory-form") {
@@ -3602,6 +3994,9 @@ function handleAction(button) {
   if (action === "show-today-bookings") showTodayBookings();
   if (action === "toggle-priority-orders") togglePriorityOrders();
   if (action === "toggle-order") toggleOrderDetail(id);
+  if (action === "toggle-all-order") toggleAllOrderDetail(id);
+  if (action === "open-order-detail") openOrderDetail(id);
+  if (action === "open-order-stage") openOrderStage(button.dataset.status || "");
   if (action === "open-customer") {
     openCustomerDetail(id);
   }
@@ -3769,6 +4164,35 @@ function toggleOrderDetail(orderId) {
   render();
 }
 
+function toggleAllOrderDetail(orderId) {
+  if (isMobileViewport()) {
+    openOrderDetail(orderId);
+    return;
+  }
+  state.allOrdersExpandedOrderId = state.allOrdersExpandedOrderId === orderId ? null : orderId;
+  state.expandedOrderId = null;
+  saveState();
+  render();
+}
+
+function openOrderDetail(orderId) {
+  state.modal = { type: "order-detail", orderId, expandedOrderId: orderId };
+  state.toast = "";
+  saveState();
+  render();
+}
+
+function openOrderStage(status) {
+  state.modal = { type: "order-stage", status };
+  state.toast = "";
+  saveState();
+  render();
+}
+
+function isMobileViewport() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches;
+}
+
 function fillOrderCustomerFields(customerId) {
   const form = document.querySelector("#new-order-form");
   if (!form) return;
@@ -3784,10 +4208,87 @@ function fillOrderCustomerFields(customerId) {
   if (!customer) form.elements.namedItem("name").focus();
 }
 
-function toggleCustomOrderField(value) {
+function selectedOrderItemValues(select = document.querySelector("[data-input='order-item']")) {
+  if (!select) return [];
+  if (!select.selectedOptions) {
+    return Array.from(select.querySelectorAll("input[name='items']:checked")).map((input) => input.value).filter(Boolean);
+  }
+  return Array.from(select.selectedOptions || []).map((option) => option.value).filter(Boolean);
+}
+
+function updateOrderSelectionSummary() {
+  const select = document.querySelector("[data-input='order-item']");
+  const summary = document.querySelector("[data-order-selection-summary]");
+  const values = selectedOrderItemValues(select);
+  toggleCustomOrderField(values);
+  if (!summary) return;
+  const items = values.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
+  const customSelected = values.includes("__custom");
+  const total = items.reduce((sum, item) => sum + inventoryPrice(item), 0);
+  const totalInput = document.querySelector("[data-order-total]");
+  if (totalInput && total > 0 && (!totalInput.dataset.manualTotal || Number(totalInput.value || 0) === 650)) {
+    totalInput.value = total;
+  }
+  summary.innerHTML = `
+    <div class="row wrap">
+      <strong>Selected items</strong>
+      <span class="amount">${money(total)} inventory total</span>
+    </div>
+    <div class="list compact-selection-list">
+      ${
+        items
+          .map(
+            (item) => `
+              <div class="selection-line">
+                <span>${inventoryOrderLabel(item)}</span>
+                <strong>${money(inventoryPrice(item))}</strong>
+              </div>
+            `,
+          )
+          .join("") || `<p class="meta">No inventory items selected.</p>`
+      }
+      ${customSelected ? `<div class="selection-line"><span>Custom order line</span><strong>Manual price</strong></div>` : ""}
+    </div>
+  `;
+  filterOrderItemPicker(document.querySelector("[data-order-item-search]")?.value || "");
+  updateOrderInvoiceSummary();
+}
+
+function filterOrderItemPicker(query) {
+  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = Array.from(document.querySelectorAll("[data-item-search-text]"));
+  let visibleCount = 0;
+  rows.forEach((row) => {
+    const checkbox = row.querySelector("input[name='items']");
+    const selected = checkbox?.checked;
+    const haystack = row.dataset.itemSearchText || "";
+    const matches = terms.length > 0 && terms.every((term) => haystack.includes(term));
+    const visible = selected || matches;
+    row.hidden = !visible;
+    if (visible) visibleCount += 1;
+  });
+  const empty = document.querySelector("[data-item-search-empty]");
+  if (empty) {
+    empty.textContent = terms.length ? "No matching items. Try another search." : "Start typing to find inventory items.";
+    empty.hidden = visibleCount > 0;
+  }
+}
+
+function updateOrderInvoiceSummary() {
+  const totalInput = document.querySelector("[data-order-total]");
+  const paidInput = document.querySelector("[data-order-paid]");
+  const amountDue = document.querySelector("[data-amount-due]");
+  if (!amountDue) return;
+  const total = Math.max(0, Number(totalInput?.value || 0));
+  const paid = Math.max(0, Number(paidInput?.value || 0));
+  amountDue.textContent = money(Math.max(total - paid, 0));
+}
+
+function toggleCustomOrderField(values) {
   const field = document.querySelector("[data-custom-order-field]");
   const input = document.querySelector("#order-custom-item");
-  const isCustom = value === "__custom";
+  const selectedValues = Array.isArray(values) ? values : [values];
+  const isCustom = selectedValues.includes("__custom");
   if (field) field.hidden = !isCustom;
   if (input) {
     input.required = isCustom;
@@ -3834,21 +4335,40 @@ function handleOrderSubmit(event) {
   const fittingDate = String(data.get("fittingDate") || "");
   const fittingTime = String(data.get("fittingTime") || "");
   const saleStaff = String(data.get("saleStaff") || currentStaffName()).trim() || "Unassigned";
-  const selectedItem = String(data.get("item") || "").trim();
+  const selectedItems = data.getAll("items").map((value) => String(value || "").trim()).filter(Boolean);
   const customItem = String(data.get("customItem") || "").trim();
   const due = String(data.get("due") || "2026-06-30");
-  const inventoryItem = selectedItem === "__custom" ? null : selectedInventoryItem(selectedItem);
-  const stockAvailable = inventoryItem ? inventoryAvailable(inventoryItem) : null;
-  const orderedItem = selectedItem === "__custom" ? customItem : inventoryItem ? inventoryOrderLabel(inventoryItem) : selectedItem;
-  if (inventoryItem) inventoryItem.committed = Math.max(0, Number(inventoryItem.committed || 0)) + 1;
+  if (!selectedItems.length) {
+    state.toast = "Select at least one item before saving the invoice.";
+    saveState();
+    render();
+    return;
+  }
+  const inventoryItems = selectedItems.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
+  const hasCustomItem = selectedItems.includes("__custom") && customItem;
+  const orderInventoryItems = inventoryItems.map((item) => ({
+    id: item.id,
+    label: inventoryOrderLabel(item),
+    price: inventoryPrice(item),
+    stockAvailableAtOrder: inventoryAvailable(item),
+    stockStatus: "Pending allocation",
+  }));
+  const orderedItem = [
+    ...orderInventoryItems.map((item) => item.label),
+    hasCustomItem ? customItem : "",
+  ].filter(Boolean).join(", ");
+  inventoryItems.forEach((item) => {
+    item.committed = Math.max(0, Number(item.committed || 0)) + 1;
+  });
   const order = {
     id: createId("o"),
     number: nextDocumentNumber("ORD", state.orders, "number", 1048),
     customerId: customer.id,
     item: orderedItem || "New tux order",
-    inventoryItemId: inventoryItem?.id || "",
-    stockStatus: inventoryItem ? "Pending allocation" : "Custom order",
-    stockAvailableAtOrder: stockAvailable,
+    inventoryItemId: inventoryItems[0]?.id || "",
+    inventoryItems: orderInventoryItems,
+    stockStatus: inventoryItems.length ? "Pending allocation" : "Custom order",
+    stockAvailableAtOrder: orderInventoryItems[0]?.stockAvailableAtOrder ?? null,
     due,
     status: "Unprocessed",
     tailor: "Not sent",
@@ -3874,8 +4394,8 @@ function handleOrderSubmit(event) {
     },
     history: [
       `Unprocessed 1 May by ${saleStaff}`,
-      inventoryItem
-        ? `Queued for stock allocation: ${inventoryOrderLabel(inventoryItem)}`
+      inventoryItems.length
+        ? `Queued for stock allocation: ${orderInventoryItems.map((item) => item.label).join(", ")}`
         : "Custom order",
     ],
   };
@@ -3902,7 +4422,7 @@ function handleOrderSubmit(event) {
   };
 
   state.orders.unshift(order);
-  const allocationResult = inventoryItem ? allocateStockForItem(inventoryItem) : { allocated: 0, waiting: 0 };
+  const allocationResult = inventoryItems.length ? allocateAllStock() : { allocated: 0, newlyAllocated: 0, waiting: 0 };
   state.invoices.unshift(invoice);
   if (fittingDate && fittingTime) {
     state.appointments.push({
@@ -3932,7 +4452,7 @@ function handleOrderSubmit(event) {
   state.selectedCustomerId = customer.id;
   state.currentView = "orders";
   state.modal = { type: "invoice-pdf", customerId: customer.id, orderId: order.id, invoiceId: invoice.id };
-  const stockMessage = inventoryItem
+  const stockMessage = inventoryItems.length
     ? order.stockStatus === "Reserved"
       ? " Stock has been allocated by due-date priority."
       : order.stockStatus === "Future allocation"
@@ -4076,6 +4596,30 @@ function handleTemplateAddSubmit(event) {
   render();
 }
 
+function handleFittingRecordSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const order = state.orders.find((item) => item.id === form.dataset.fittingForm);
+  if (!order) return;
+  const data = new FormData(form);
+  const record = {
+    notes: String(data.get("notes") || "").trim(),
+    updated: todayKey(),
+    updatedBy: currentStaffName(),
+  };
+  fittingChecklistSections()
+    .flatMap((section) => section.items)
+    .forEach((item) => {
+      record[item.id] = data.get(item.id) === "on";
+    });
+  order.fittingRecord = record;
+  order.history = order.history || [];
+  order.history.unshift(`Fitting notes saved ${formatDate(record.updated)} by ${record.updatedBy}`);
+  state.toast = `Fitting record saved for ${order.number}.`;
+  saveState();
+  render();
+}
+
 function handleInventorySubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
@@ -4091,6 +4635,7 @@ function handleInventorySubmit(event) {
   const qty = Math.max(0, Number(data.get("qty") || 0));
   const alert = Math.max(0, Number(data.get("alert") || 0));
   const committed = Math.max(0, Number(data.get("committed") || 0));
+  const price = Math.max(0, Number(data.get("price") || 0));
 
   if (!item || !category || !variationValues.length) return;
 
@@ -4107,6 +4652,7 @@ function handleInventorySubmit(event) {
     qty,
     alert,
     committed,
+    price,
   }));
 
   state.inventory.push(...newItems);
@@ -4171,7 +4717,7 @@ function updateOrderStatus(orderId, status) {
   const previousStatus = order.status;
   order.status = normaliseOrderStatus(status);
   order.updated = "2026-05-01";
-  order.tailor = order.status === "At Tailor" ? "Aziz Tailoring" : order.status === "Ready" ? "Returned" : order.tailor;
+  order.tailor = order.status === "At Tailor" ? "Aziz Tailoring" : order.status === "Ready for collection" ? "Returned" : order.tailor;
   order.history.push(`${order.status} 1 May by ${currentStaffName()}`);
   if (order.inventoryItemId) {
     const item = state.inventory.find((stock) => stock.id === order.inventoryItemId);
@@ -4375,6 +4921,15 @@ function updateStockAlert(id, value) {
   if (!item) return;
   item.alert = Math.max(0, Number(value) || 0);
   state.toast = `${item.item} low stock alert updated to ${item.alert}.`;
+  saveState();
+  render();
+}
+
+function updateStockPrice(id, value) {
+  const item = state.inventory.find((stock) => stock.id === id);
+  if (!item) return;
+  item.price = Math.max(0, Number(value) || 0);
+  state.toast = `${item.item} price updated to ${money(item.price)}.`;
   saveState();
   render();
 }
