@@ -619,6 +619,7 @@ function render() {
       `;
     }
     bindEvents();
+    centerActiveOrderStageTab();
   } catch (error) {
     state = structuredClone(seedState);
     app.innerHTML = `
@@ -629,6 +630,14 @@ function render() {
       </div>
     `;
   }
+}
+
+function centerActiveOrderStageTab() {
+  const activeTab = document.querySelector(".order-stage-tabs button.active");
+  if (!activeTab) return;
+  requestAnimationFrame(() => {
+    activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  });
 }
 
 function renderSidebar() {
@@ -864,6 +873,7 @@ function renderModal() {
   if (state.modal.type === "staff-booking") return renderStaffBookingModal();
   if (state.modal.type === "inventory") return renderInventoryModal();
   if (state.modal.type === "dashboard-metric") return renderDashboardMetricModal();
+  if (state.modal.type === "dashboard-attention") return renderDashboardAttentionModal();
   if (state.modal.type === "appointment-detail") return renderAppointmentDetailModal();
   if (state.modal.type === "order-detail") return renderOrderDetailModal();
   if (state.modal.type === "order-stage") return renderOrderStageModal();
@@ -1641,6 +1651,127 @@ function renderDashboardMetricModal() {
   `;
 }
 
+function renderDashboardAttentionModal() {
+  const category = state.modal.category || "";
+  const config = dashboardAttentionCategory(category);
+  return `
+    <div class="modal-backdrop" role="presentation" data-action="close-modal">
+      <section class="modal-card dashboard-metric-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-attention-title">
+        <div class="modal-header">
+          <div>
+            <p class="page-kicker">Needs attention</p>
+            <h3 id="dashboard-attention-title" class="modal-title">${config.title}</h3>
+            <p class="panel-subtitle">${config.subtitle}</p>
+          </div>
+          <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+        </div>
+        <div class="list">
+          ${config.body || emptyState(config.empty)}
+        </div>
+        <div class="modal-actions">
+          <button class="ghost-button" data-action="close-modal">Close</button>
+          ${config.actionView ? `<button class="button gold" data-view="${config.actionView}">${config.actionLabel}</button>` : ""}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function dashboardAttentionCategory(category) {
+  const priorityNotes = dashboardPriorityNotes();
+  const missingOrders = priorityMissingOrders();
+  const fittingPayments = dashboardFittingPaymentOrders();
+  const dueSoonOrders = upcomingOrdersDueSoon();
+  const lowStock = state.inventory.filter((item) => item.qty <= item.alert).sort((a, b) => inventoryAvailable(a) - inventoryAvailable(b));
+  const configs = {
+    "priority-notes": {
+      title: `Priority fitting notes (${priorityNotes.length})`,
+      subtitle: "Fitting notes marked as priority, sorted by priority due date.",
+      actionView: "orders",
+      actionLabel: "Open orders",
+      empty: "No priority fitting notes.",
+      body: priorityNotes.map(priorityNoteAttentionCard).join(""),
+    },
+    "missing-stock": {
+      title: `Missing stock (${missingOrders.length})`,
+      subtitle: "Orders waiting for stock allocation, sorted by earliest due date.",
+      actionView: "orders",
+      actionLabel: "Open orders",
+      empty: "No missing stock orders.",
+      body: missingOrders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join(""),
+    },
+    "fitting-payment": {
+      title: `Overdue deposits (${fittingPayments.length})`,
+      subtitle: "Orders with fittings that have not reached the required deposit target.",
+      actionView: "orders",
+      actionLabel: "Open orders",
+      empty: "No overdue deposits need attention.",
+      body: fittingPayments.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join(""),
+    },
+    "due-soon": {
+      title: `Due in 2 weeks (${dueSoonOrders.length})`,
+      subtitle: `Orders due from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, 14))}.`,
+      actionView: "orders",
+      actionLabel: "Open orders",
+      empty: "No orders due in the next 2 weeks.",
+      body: dueSoonOrders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join(""),
+    },
+    "low-stock": {
+      title: `Low stock (${lowStock.length})`,
+      subtitle: "Inventory items at or below their low-stock alert.",
+      actionView: "inventory",
+      actionLabel: "Open inventory",
+      empty: "No low-stock items.",
+      body: lowStock.map(lowStockAttentionCard).join(""),
+    },
+  };
+  return configs[category] || {
+    title: "Needs attention",
+    subtitle: "Items that need staff review.",
+    empty: "Nothing to show.",
+    body: "",
+  };
+}
+
+function dashboardFittingPaymentOrders() {
+  return state.orders
+    .filter((order) => order.fittingDate && order.fittingDate >= DEMO_TODAY && Math.max(Math.ceil(order.total / 2) - order.paid, 0) > 0)
+    .sort((a, b) => `${a.fittingDate} ${a.fittingTime || ""}`.localeCompare(`${b.fittingDate} ${b.fittingTime || ""}`));
+}
+
+function priorityNoteAttentionCard({ order, customer, record }) {
+  return `
+    <article class="item-card clickable-card" data-action="open-order-detail" data-id="${order.id}" tabindex="0" role="button" aria-label="Open ${order.number} details">
+      <div class="row wrap">
+        <div>
+          <p class="name">${customer.name}</p>
+          <p class="meta">${order.number} • ${record.priorityDue ? `Priority due ${formatDate(record.priorityDue)}` : "Priority due date not set"} • Order due ${formatDate(order.due)}</p>
+        </div>
+        <span class="overdue-badge">Priority</span>
+      </div>
+      <p class="meta">${escapeHtml(record.additionalNotes || record.notes || "Priority note marked with no note text.")}</p>
+    </article>
+  `;
+}
+
+function lowStockAttentionCard(item) {
+  return `
+    <article class="item-card">
+      <div class="row wrap">
+        <div>
+          <p class="name">${inventoryParentName(item)}</p>
+          <p class="meta">${inventoryVariationLabel(item)}${item.color ? ` • ${item.color}` : ""}</p>
+        </div>
+        <span class="status unpaid">Low stock</span>
+      </div>
+      <div class="row wrap">
+        <p class="meta">Qty ${item.qty} • Alert ${item.alert} • ${inventoryAvailable(item)} available</p>
+        <strong>${money(inventoryPrice(item))}</strong>
+      </div>
+    </article>
+  `;
+}
+
 function renderAppointmentDetailModal() {
   const appt = state.appointments.find((appointment) => appointment.id === state.modal.appointmentId);
   if (!appt) return "";
@@ -1771,31 +1902,29 @@ function dashboardAppointmentCard(appt) {
 }
 
 function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, lowStock }) {
-  const fittingPayments = state.orders
-    .filter((order) => order.fittingDate && order.fittingDate >= DEMO_TODAY && Math.max(Math.ceil(order.total / 2) - order.paid, 0) > 0)
-    .sort((a, b) => `${a.fittingDate} ${a.fittingTime || ""}`.localeCompare(`${b.fittingDate} ${b.fittingTime || ""}`));
+  const fittingPayments = dashboardFittingPaymentOrders();
   return [
     ...priorityNotes.slice(0, 3).map(({ order, customer, record }) => ({
       label: "Priority fitting note",
       value: "!",
       note: `${customer.name} • ${order.number}${record.priorityDue ? ` • Due ${formatDate(record.priorityDue)}` : ""}`,
       detail: record.additionalNotes || record.notes || "Priority note marked with no note text.",
-      action: "orders",
+      category: "priority-notes",
     })),
     missingOrders.length
       ? {
           label: "Missing stock",
           value: missingOrders.length,
           note: `${missingOrders[0].number} due ${formatDate(missingOrders[0].due)}`,
-          action: "orders",
+          category: "missing-stock",
         }
       : null,
     fittingPayments.length
       ? {
-          label: "Fitting payment",
+          label: "Overdue deposits",
           value: fittingPayments.length,
           note: `${getCustomer(fittingPayments[0].customerId).name} needs ${money(Math.max(Math.ceil(fittingPayments[0].total / 2) - fittingPayments[0].paid, 0))} to reach 50%`,
-          action: "orders",
+          category: "fitting-payment",
         }
       : null,
     priorityNotes.length > 3
@@ -1803,7 +1932,7 @@ function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, 
           label: "More priority notes",
           value: priorityNotes.length - 3,
           note: `${priorityNotes.length - 3} more fitting note${priorityNotes.length - 3 === 1 ? "" : "s"} need review`,
-          action: "orders",
+          category: "priority-notes",
         }
       : null,
     dueSoonOrders.length
@@ -1811,7 +1940,7 @@ function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, 
           label: "Due in 2 weeks",
           value: dueSoonOrders.length,
           note: `${dueSoonOrders[0].number} due ${formatDate(dueSoonOrders[0].due)}`,
-          action: "orders",
+          category: "due-soon",
         }
       : null,
     lowStock.length
@@ -1819,7 +1948,7 @@ function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, 
           label: "Low stock",
           value: lowStock.length,
           note: closestLowStockNote(lowStock),
-          action: "inventory",
+          category: "low-stock",
         }
       : null,
   ].filter(Boolean);
@@ -1832,7 +1961,7 @@ function closestLowStockNote(items) {
 
 function dashboardAttentionCard(item) {
   return `
-    <button class="attention-card" type="button" data-view="${item.action}">
+    <button class="attention-card" type="button" data-action="open-dashboard-attention" data-id="${item.category}">
       <span>
         <strong>${item.label}</strong>
         <small>${item.note}</small>
@@ -1910,30 +2039,6 @@ function renderBookings() {
   const calendarDate = state.calendarDate || "2026-05-01";
   const calendarMode = state.calendarMode || "day";
   const visibleAppointments = appointmentsForCalendar(calendarDate, calendarMode);
-  const workflowFilter = state.workflowFilter || "follow-up";
-  const workflowOptions = [
-    {
-      id: "follow-up",
-      statusClass: "ordered",
-      badge: "No purchase",
-      title: "Schedule follow-up",
-      description: "Email or text goes out a few days after the visit so the enquiry is not lost.",
-    },
-    {
-      id: "wants-to-buy",
-      statusClass: "ready",
-      badge: "Wants to buy",
-      title: "Measure, quote, deposit",
-      description: "Measurements are saved, a quotation/invoice is created, payment is recorded, and fitting is booked before they leave.",
-    },
-    {
-      id: "fitting",
-      statusClass: "partial",
-      badge: "Fitting",
-      title: "Reach 50%",
-      description: "At fitting, the order should be at least 50% paid. Staff can collect the difference and then book collection.",
-    },
-  ];
   return `
     <section class="panel">
       <div class="panel-header">
@@ -1982,92 +2087,21 @@ function renderBookings() {
       </div>`
       }
     </section>
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <div>
-          <h3 class="panel-title">Appointment outcome workflow</h3>
-          <p class="panel-subtitle">After a customer attends, staff choose either follow-up or quotation/order.</p>
-        </div>
-      </div>
-      <div class="workflow-grid">
-        ${workflowOptions
-          .map(
-            (option) => `
-              <button class="workflow-step ${workflowFilter === option.id ? "active" : ""}" type="button" data-action="set-workflow-filter" data-id="${option.id}">
-                <span class="status ${option.statusClass}">${option.badge}</span>
-                <h4>${option.title}</h4>
-                <p>${option.description}</p>
-              </button>
-            `,
-          )
-          .join("")}
-      </div>
-      <div class="divider"></div>
-      <div class="panel-header">
-        <div>
-          <h3 class="panel-title">${workflowResultTitle(workflowFilter)}</h3>
-          <p class="panel-subtitle">${workflowResultSubtitle(workflowFilter)}</p>
-        </div>
-      </div>
-      <div class="list">
-        ${renderWorkflowResults(workflowFilter)}
-      </div>
-    </section>
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <div>
-          <h3 class="panel-title">Customer messages</h3>
-          <p class="panel-subtitle">Every booking gets an email and text confirmation, then a reminder the day before.</p>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Customer</th>
-              <th>Appointment</th>
-              <th>Confirmation</th>
-              <th>Reminder</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${state.appointments
-              .slice()
-              .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
-              .map((appt) => {
-                const comms = appointmentComms(appt);
-                return `
-                  <tr>
-                    <td><strong>${appt.name}</strong><br><span class="meta">${getCustomer(appt.customerId).phone}</span></td>
-                    <td>${formatDate(appt.date)} at ${appt.time}<br><span class="meta">${appt.type}</span></td>
-                    <td><span class="status ready">${comms.confirmationStatus}</span></td>
-                    <td><span class="status ordered">${comms.reminderStatus}</span><br><span class="meta">${formatDate(comms.reminderDate)}</span></td>
-                  </tr>
-                `;
-              })
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
   `;
 }
 
 function workflowResultTitle(filter) {
-  if (filter === "wants-to-buy") return "Customers ready to order";
-  if (filter === "fitting") return "Fittings needing payment";
+  if (filter === "bought" || filter === "wants-to-buy") return "Bought";
   return "Follow-ups";
 }
 
 function workflowResultSubtitle(filter) {
-  if (filter === "wants-to-buy") return "Customers who bought or have an active quotation/order, sorted by due date.";
-  if (filter === "fitting") return "Orders with fitting appointments, sorted by fitting date.";
+  if (filter === "bought" || filter === "wants-to-buy") return "Customers who bought and now have an active quotation/order, sorted by due date.";
   return "Customers who attended but did not buy, sorted by follow-up date.";
 }
 
 function renderWorkflowResults(filter) {
-  if (filter === "wants-to-buy") return renderWantsToBuyResults();
-  if (filter === "fitting") return renderFittingWorkflowResults();
+  if (filter === "bought" || filter === "wants-to-buy") return renderBoughtWorkflowResults();
   return renderFollowUpWorkflowResults();
 }
 
@@ -2095,7 +2129,7 @@ function renderFollowUpWorkflowResults() {
     .join("") || emptyState("No follow-ups scheduled.");
 }
 
-function renderWantsToBuyResults() {
+function renderBoughtWorkflowResults() {
   const activeOrders = state.orders
     .filter((order) => !["Collected", "Cancelled", "Ready for collection"].includes(order.status))
     .slice()
@@ -2366,42 +2400,89 @@ function fittingChecklistSections() {
 }
 
 function renderOrders() {
-  const columns = ["Missing", "Unprocessed", "Ready", "Fitting", "At Tailor", "Ready for collection"];
+  const columns = ["Missing", "Unprocessed", "Ready", "Fitting", "At Tailor", "Ready for collection", "Collected"];
+  const orderPeriod = state.orderPeriod || "all";
+  const filteredOrders = ordersForPeriod(orderPeriod);
+  const activeStage = columns.includes(state.orderStageView) ? state.orderStageView : "home";
   return `
-    <section class="panel">
+    <section class="panel order-view-panel">
       <div class="panel-header">
         <div>
-          <h3 class="panel-title">Live order board</h3>
-          <p class="panel-subtitle">Workflow checks the rolling ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month stock window, allocates stock, then moves through fitting, tailoring, and collection.</p>
+          <h3 class="panel-title">Order views</h3>
+          <p class="panel-subtitle">Choose Home for the full overview, or open one stage at a time.</p>
         </div>
-        <button class="button gold" data-action="new-order">${icon("plus")} Create order</button>
       </div>
-      <div class="board">
+      <div class="order-stage-tabs" role="tablist" aria-label="Order stage views">
+        <button class="${activeStage === "home" ? "active" : ""}" data-order-stage-view="home" type="button">
+          Home
+          <span>${filteredOrders.length}</span>
+        </button>
         ${columns
           .map((status) => {
-            const config = orderStageConfig(status);
-            const orders = state.orders.filter((order) => order.status === status).sort((a, b) => sortOrdersForStage(a, b, status));
+            const count = filteredOrders.filter((order) => order.status === status).length;
             return `
-              <div class="board-column ${status === "Missing" ? "urgent-column" : ""}">
-                <h4 class="board-title">${status}<span>${orders.length}</span></h4>
-                ${config.description ? `<p class="stage-description">${config.description}</p>` : ""}
-                <label class="stage-search">
-                  <span class="visually-hidden">Search ${status} orders</span>
-                  <input type="search" data-stage-search="${escapeAttribute(status)}" placeholder="Search customers" autocomplete="off" />
-                </label>
-                <button class="stage-summary-card" data-action="open-order-stage" data-status="${escapeAttribute(status)}">
-                  <span>${status}</span>
-                  <strong>${orders.length}</strong>
-                  <small>${config.description || (orders.length === 1 ? "order in this stage" : "orders in this stage")}</small>
-                </button>
-                <div class="list" data-stage-list="${escapeAttribute(status)}">
-                  ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders")}
-                </div>
-              </div>
+              <button class="${activeStage === status ? "active" : ""}" data-order-stage-view="${escapeAttribute(status)}" type="button">
+                ${status}
+                <span>${count}</span>
+              </button>
             `;
           })
           .join("")}
       </div>
+      <div class="order-filter-bar">
+        <div class="segmented-control" role="tablist" aria-label="Order date filter">
+          ${["week", "month", "year", "all"]
+            .map(
+              (period) => `
+                <button class="${orderPeriod === period ? "active" : ""}" data-order-period="${period}" type="button">
+                  ${orderPeriodTabLabel(period)}
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+        <p class="meta">${filteredOrders.length} ${filteredOrders.length === 1 ? "order" : "orders"} shown by due date.</p>
+      </div>
+    </section>
+    ${
+      activeStage === "home"
+        ? renderOrdersHome(columns, filteredOrders, orderPeriod)
+        : `<section class="order-stage-detail-grid single-stage-view">
+            ${orderStageDetailCard(activeStage, filteredOrders)}
+          </section>`
+    }
+    ${activeStage === "home" ? renderWeeklyAlterationTotals() : ""}
+  `;
+}
+
+function renderOrdersHome(columns, filteredOrders, orderPeriod) {
+  return `
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h3 class="panel-title">Order overview</h3>
+          <p class="panel-subtitle">Quick stage totals for ${orderPeriodLabel(orderPeriod)}. Tap a stage to jump to its order card below.</p>
+        </div>
+        <button class="button gold" data-action="new-order">${icon("plus")} Create order</button>
+      </div>
+      <div class="order-stat-grid">
+        ${columns
+          .map((status) => {
+            const config = orderStageConfig(status);
+            const orders = filteredOrders.filter((order) => order.status === status).sort((a, b) => sortOrdersForStage(a, b, status));
+            return `
+              <button class="stage-summary-card order-stat-card ${status === "Missing" ? "urgent-stat" : ""}" data-action="scroll-order-stage" data-id="${escapeAttribute(status)}">
+                <span>${status}</span>
+                <strong>${orders.length}</strong>
+                <small>${config.description || (orders.length === 1 ? "order in this stage" : "orders in this stage")}</small>
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+    <section class="order-stage-detail-grid">
+      ${columns.map((status) => orderStageDetailCard(status, filteredOrders)).join("")}
     </section>
     <section class="panel" style="margin-top: 16px;">
       <div class="panel-header">
@@ -2410,8 +2491,12 @@ function renderOrders() {
           <p class="panel-subtitle">Tap an order to expand its full details, balance, dates, and measurements.</p>
         </div>
       </div>
-      <div class="list">
-        ${state.orders
+      <label class="stage-search">
+        <span class="visually-hidden">Search all orders</span>
+        <input type="search" data-stage-search="all-orders" placeholder="Search customers or orders" autocomplete="off" />
+      </label>
+      <div class="list" data-stage-list="all-orders">
+        ${filteredOrders
           .slice()
           .sort(sortByClosestDueDate)
           .map((order) =>
@@ -2425,8 +2510,70 @@ function renderOrders() {
           .join("")}
       </div>
     </section>
-    ${renderWeeklyAlterationTotals()}
   `;
+}
+
+function orderStageDetailCard(status, sourceOrders = state.orders) {
+  const config = orderStageConfig(status);
+  const orders = sourceOrders.filter((order) => order.status === status).sort((a, b) => sortOrdersForStage(a, b, status));
+  return `
+    <section class="panel order-stage-detail-card ${status === "Missing" ? "urgent-column" : ""}" id="${orderStageElementId(status)}">
+      <div class="panel-header">
+        <div>
+          <h3 class="panel-title">${status}</h3>
+          <p class="panel-subtitle">${orders.length} ${orders.length === 1 ? "order" : "orders"} ${config.sortLabel || "sorted by earliest due date"}.</p>
+        </div>
+        <span class="status ${statusClass(status)}">${orders.length}</span>
+      </div>
+      <label class="stage-search">
+        <span class="visually-hidden">Search ${status} orders</span>
+        <input type="search" data-stage-search="${escapeAttribute(status)}" placeholder="Search customers" autocomplete="off" />
+      </label>
+      <div class="list" data-stage-list="${escapeAttribute(status)}">
+        ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders")}
+      </div>
+    </section>
+  `;
+}
+
+function orderStageElementId(status) {
+  return `order-stage-${String(status || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+}
+
+function ordersForPeriod(period = "all") {
+  return state.orders.filter((order) => orderInPeriod(order, period));
+}
+
+function orderInPeriod(order, period = "all") {
+  if (period === "all") return true;
+  const due = order.due || "";
+  if (!due) return false;
+  if (period === "week") {
+    const dates = weekDates(DEMO_TODAY);
+    return due >= dates[0] && due <= dates[6];
+  }
+  if (period === "month") return due.slice(0, 7) === DEMO_TODAY.slice(0, 7);
+  if (period === "year") return due.slice(0, 4) === DEMO_TODAY.slice(0, 4);
+  return true;
+}
+
+function orderPeriodTabLabel(period) {
+  return {
+    week: "Week",
+    month: "Month",
+    year: "Year",
+    all: "All",
+  }[period] || "All";
+}
+
+function orderPeriodLabel(period) {
+  if (period === "week") {
+    const dates = weekDates(DEMO_TODAY);
+    return `${formatDate(dates[0])} to ${formatDate(dates[6])}`;
+  }
+  if (period === "month") return monthLabel(DEMO_TODAY.slice(0, 7));
+  if (period === "year") return DEMO_TODAY.slice(0, 4);
+  return "all due dates";
 }
 
 function renderOrderStageModal() {
@@ -4536,6 +4683,22 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("[data-order-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.orderPeriod = button.dataset.orderPeriod || "all";
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-order-stage-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.orderStageView = button.dataset.orderStageView === "home" ? "" : button.dataset.orderStageView;
+      saveState();
+      render();
+    });
+  });
+
   document.querySelectorAll("[data-calendar-pick]").forEach((button) => {
     button.addEventListener("click", () => {
       state.calendarDate = button.dataset.calendarPick;
@@ -4702,12 +4865,14 @@ function handleAction(button) {
   if (action === "sale-from-appointment") openNewOrderForm(id, button.dataset.appointment);
   if (action === "close-modal") closeModal();
   if (action === "open-dashboard-metric") openDashboardMetric(id);
+  if (action === "open-dashboard-attention") openDashboardAttention(id);
   if (action === "open-appointment-detail") openAppointmentDetail(id);
   if (action === "show-today-bookings") showTodayBookings();
   if (action === "toggle-priority-orders") togglePriorityOrders();
   if (action === "toggle-order") toggleOrderDetail(id);
   if (action === "toggle-all-order") toggleAllOrderDetail(id);
   if (action === "open-order-detail") openOrderDetail(id);
+  if (action === "scroll-order-stage") scrollToOrderStage(id);
   if (action === "open-order-stage") openOrderStage(button.dataset.status || "");
   if (action === "open-customer") {
     openCustomerDetail(id);
@@ -4766,6 +4931,13 @@ function openDashboardMetric(metric) {
   render();
 }
 
+function openDashboardAttention(category) {
+  state.modal = { type: "dashboard-attention", category };
+  state.toast = "";
+  saveState();
+  render();
+}
+
 function openAppointmentDetail(appointmentId) {
   state.modal = { type: "appointment-detail", appointmentId };
   state.toast = "";
@@ -4774,7 +4946,7 @@ function openAppointmentDetail(appointmentId) {
 }
 
 function setWorkflowFilter(filter) {
-  state.workflowFilter = filter || "follow-up";
+  state.workflowFilter = filter === "wants-to-buy" ? "bought" : filter || "follow-up";
   saveState();
   render();
 }
@@ -4908,6 +5080,10 @@ function openOrderStage(status) {
   render();
 }
 
+function scrollToOrderStage(status) {
+  document.getElementById(orderStageElementId(status))?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function isMobileViewport() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches;
 }
@@ -5006,7 +5182,7 @@ function updateOrderInvoiceSummary() {
 function filterOrderStage(input) {
   const status = input?.dataset?.stageSearch || "";
   const list =
-    input?.closest(".board-column, .modal-card")?.querySelector(`[data-stage-list="${CSS.escape(status)}"]`) ||
+    input?.closest(".board-column, .modal-card, .panel")?.querySelector(`[data-stage-list="${CSS.escape(status)}"]`) ||
     document.querySelector(`[data-stage-list="${CSS.escape(status)}"]`);
   if (!list) return;
   const terms = String(input?.value || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
