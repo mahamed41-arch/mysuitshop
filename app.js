@@ -24,6 +24,22 @@ const seedState = {
   invoiceYear: 2026,
   financeUnlocked: false,
   staffMembers: ["Sam", "Ayaan", "Leah", "Maya"],
+  staffUsers: [
+    { id: "u1", name: "Sam", role: "Senior staff", financeAccess: true, status: "Active" },
+    { id: "u2", name: "Ayaan", role: "Staff", financeAccess: false, status: "Active" },
+    { id: "u3", name: "Leah", role: "Staff", financeAccess: false, status: "Active" },
+    { id: "u4", name: "Maya", role: "Staff", financeAccess: false, status: "Active" },
+  ],
+  settings: {
+    theme: "Apple clean",
+    bookingWindowDays: 14,
+    stockAllocationDay: "Tuesday",
+    stockAllocationMonths: 3,
+    fittingPaymentTarget: 50,
+    defaultReminder: "Day before",
+    financeAccess: "Owner only",
+    invoicePassword: FINANCE_PASSWORD,
+  },
   activeStaff: "",
   clockedInDate: "",
   staffClock: {
@@ -289,6 +305,16 @@ const seedState = {
       },
       updated: "2026-04-30",
       notes: "Taper trousers and shorten sleeves.",
+      fittingRecord: {
+        jacketSleeveLength: true,
+        trouserTaper: true,
+        notes: "Sleeves and trouser taper need checking before tailor pickup.",
+        additionalNotes: "Call customer once tailor confirms turnaround.",
+        priority: true,
+        priorityDue: "2026-05-03",
+        updated: "2026-05-01",
+        updatedBy: "Ayaan",
+      },
       history: ["Unprocessed 28 Apr", "At Tailor 30 Apr"],
     },
     {
@@ -431,6 +457,7 @@ const navItems = [
   { id: "inventory", label: "Inventory", icon: "ruler" },
   { id: "invoices", label: "Invoices", icon: "invoice" },
   { id: "rota", label: "Staff metrics", icon: "users" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];
 
 function loadState() {
@@ -445,6 +472,16 @@ function loadState() {
 
 function normaliseInventoryState(sourceState) {
   const nextState = { ...sourceState };
+  nextState.settings = { ...structuredClone(seedState.settings), ...(sourceState.settings || {}) };
+  nextState.staffUsers = Array.isArray(sourceState.staffUsers)
+    ? sourceState.staffUsers
+    : staffMembersFromSource(sourceState).map((name, index) => ({
+        id: `u${index + 1}`,
+        name,
+        role: index === 0 ? "Senior staff" : "Staff",
+        financeAccess: index === 0,
+        status: "Active",
+      }));
   nextState.orders = (sourceState.orders || []).map((order) => ({
     ...order,
     status: normaliseOrderStatus(order.status),
@@ -456,6 +493,23 @@ function normaliseInventoryState(sourceState) {
         )
       : [],
   }));
+  if (!sourceState.dashboardPriorityDemoSeeded && !nextState.orders.some((order) => order.fittingRecord?.priority)) {
+    const demoPriorityOrder = nextState.orders.find((order) => order.id === "o3") || nextState.orders.find((order) => order.fittingDate);
+    if (demoPriorityOrder) {
+      demoPriorityOrder.fittingRecord = {
+        ...(demoPriorityOrder.fittingRecord || {}),
+        jacketSleeveLength: true,
+        trouserTaper: true,
+        notes: demoPriorityOrder.fittingRecord?.notes || "Sleeves and trouser taper need checking before tailor pickup.",
+        additionalNotes: demoPriorityOrder.fittingRecord?.additionalNotes || "Call customer once tailor confirms turnaround.",
+        priority: true,
+        priorityDue: demoPriorityOrder.fittingRecord?.priorityDue || "2026-05-03",
+        updated: demoPriorityOrder.fittingRecord?.updated || DEMO_TODAY,
+        updatedBy: demoPriorityOrder.fittingRecord?.updatedBy || "Ayaan",
+      };
+      nextState.dashboardPriorityDemoSeeded = true;
+    }
+  }
   nextState.inventory = (sourceState.inventory || []).flatMap((item) => {
     if (item.parentItem || item.variationType || !String(item.size || "").includes(",")) {
       return {
@@ -486,6 +540,14 @@ function normaliseInventoryState(sourceState) {
   return nextState;
 }
 
+function staffMembersFromSource(sourceState) {
+  return [...new Set([...(sourceState.staffMembers || []), ...((sourceState.appointments || []).map((appointment) => appointment.staff).filter(Boolean)), "Sam", "Ayaan"])].filter(Boolean);
+}
+
+function appSetting(key, fallback) {
+  return state.settings?.[key] ?? seedState.settings[key] ?? fallback;
+}
+
 function normaliseOrderStatus(status) {
   if (status === "Measured" || status === "Booked") return "Unprocessed";
   if (status === "Ordered") return "Fitting";
@@ -504,8 +566,9 @@ function saveState() {
 
 function staffMembers() {
   const fromState = Array.isArray(state.staffMembers) ? state.staffMembers : [];
+  const fromUsers = Array.isArray(state.staffUsers) ? state.staffUsers.map((user) => user.name).filter(Boolean) : [];
   const fromAppointments = (state.appointments || []).map((appointment) => appointment.staff).filter(Boolean);
-  return [...new Set([...fromState, ...fromAppointments, "Sam", "Ayaan"])].filter((name) => name !== "Unassigned");
+  return [...new Set([...fromUsers, ...fromState, ...fromAppointments, "Sam", "Ayaan"])].filter((name) => name !== "Unassigned");
 }
 
 function currentStaffName() {
@@ -676,7 +739,7 @@ function renderMobileTabbar() {
 
 function renderTopbar() {
   const titles = {
-    dashboard: ["Today at the shop", "A live overview of appointments, orders, stock pressure, and money due."],
+    dashboard: ["Today at the shop", "A quick glance at today's bookings and the few things that need staff attention."],
     bookings: ["Bookings", "Manage staff appointments and view the customer self-booking flow."],
     customers: ["Customers", "Customer profiles, measurements, order history, and notes in one place."],
     orders: ["Order tracker", "Move tux orders from booking through tailoring, ready, and collection."],
@@ -684,6 +747,7 @@ function renderTopbar() {
     inventory: ["Inventory", "Track stock, committed items, and low-stock pressure before it becomes a problem."],
     invoices: ["Invoices and payments", "See balances, paid invoices, and record simple payment updates."],
     rota: ["Staff metrics", "See staff schedules, clock-ins, sales made, order value, and payment activity."],
+    settings: ["Settings", "Manage users, access, booking rules, finance controls, themes, and shop defaults."],
   };
   const [title, copy] = titles[state.currentView] || titles.dashboard;
   return `
@@ -695,6 +759,7 @@ function renderTopbar() {
       </div>
       <div class="top-actions">
         <button class="ghost-button" data-action="reset">${icon("refresh")} Reset demo</button>
+        <button class="ghost-button top-booking-button" data-action="new-staff-booking">${icon("calendar")} New booking</button>
         <button class="button gold" data-action="new-order">${icon("plus")} New order</button>
       </div>
     </header>
@@ -783,6 +848,8 @@ function renderView() {
       return renderInvoices();
     case "rota":
       return renderRota();
+    case "settings":
+      return renderSettings();
     default:
       return renderDashboard();
   }
@@ -797,6 +864,7 @@ function renderModal() {
   if (state.modal.type === "staff-booking") return renderStaffBookingModal();
   if (state.modal.type === "inventory") return renderInventoryModal();
   if (state.modal.type === "dashboard-metric") return renderDashboardMetricModal();
+  if (state.modal.type === "appointment-detail") return renderAppointmentDetailModal();
   if (state.modal.type === "order-detail") return renderOrderDetailModal();
   if (state.modal.type === "order-stage") return renderOrderStageModal();
   return "";
@@ -1573,104 +1641,205 @@ function renderDashboardMetricModal() {
   `;
 }
 
+function renderAppointmentDetailModal() {
+  const appt = state.appointments.find((appointment) => appointment.id === state.modal.appointmentId);
+  if (!appt) return "";
+  const customer = getCustomer(appt.customerId);
+  const comms = appointmentComms(appt);
+  const confirmationDelivery = deliveryState(comms.confirmationStatus);
+  const reminderDelivery = deliveryState(comms.reminderStatus);
+  const typeTag = appointmentTypeTag(appt.type);
+  const isSalesAppointment = /consultation|measurements/i.test(appt.type);
+  return `
+    <div class="modal-backdrop" role="presentation" data-action="close-modal">
+      <section class="modal-card appointment-detail-modal" role="dialog" aria-modal="true" aria-labelledby="appointment-detail-title">
+        <div class="modal-header">
+          <div>
+            <p class="page-kicker">${typeTag.label} appointment</p>
+            <h3 id="appointment-detail-title" class="modal-title">${appt.time} • ${appt.name}</h3>
+            <p class="panel-subtitle">${formatDate(appt.date)} with ${appt.staff}</p>
+          </div>
+          <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+        </div>
+        <div class="appointment-detail-grid">
+          <div class="detail-list">
+            <p><span>Customer</span><strong>${customer.name}</strong></p>
+            <p><span>Phone</span><strong>${customer.phone}</strong></p>
+            <p><span>Email</span><strong>${customer.email}</strong></p>
+            <p><span>Event</span><strong>${customer.event}</strong></p>
+            <p><span>Status</span><strong>${appt.status}</strong></p>
+          </div>
+          <div class="appointment-note-box">
+            <span>Appointment notes</span>
+            <p>${escapeHtml(appt.notes || "No appointment notes added.")}</p>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="panel-header compact-modal-header">
+          <div>
+            <h3 class="panel-title">Communication made</h3>
+            <p class="panel-subtitle">Confirmation and reminder records for this appointment.</p>
+          </div>
+        </div>
+        <div class="communication-row appointment-detail-comms">
+          <span class="communication-status">
+            <span>Email + text confirmation</span>
+            <strong class="delivery-state ${confirmationDelivery.className}">${comms.confirmationStatus}</strong>
+          </span>
+          <span class="communication-status">
+            <span>Reminder</span>
+            <strong class="delivery-state ${reminderDelivery.className}">${comms.reminderStatus}</strong>
+            <small>${formatDate(comms.reminderDate)}</small>
+          </span>
+        </div>
+        ${
+          isSalesAppointment
+            ? `<div class="appointment-next-step">
+                <p class="meta">If the client attends and wants to proceed: measure them, prepare the quote, create the invoice, then take the deposit.</p>
+                <div class="appointment-actions">
+                  <button class="ghost-button" data-action="no-sale-follow-up" data-id="${appt.id}">${icon("external")} No-sale follow-up</button>
+                  <button class="button gold" data-action="sale-from-appointment" data-id="${appt.customerId}" data-appointment="${appt.id}">${icon("invoice")} Create quote/invoice</button>
+                </div>
+              </div>`
+            : ""
+        }
+      </section>
+    </div>
+  `;
+}
+
 function renderDashboard() {
-  const todaysAppointments = state.appointments.filter((appt) => appt.date === "2026-05-01");
+  const todaysAppointments = state.appointments.filter((appt) => appt.date === DEMO_TODAY).sort((a, b) => a.time.localeCompare(b.time));
   const missingOrders = priorityMissingOrders();
   const closestMissingOrder = missingOrders[0];
   const dueSoonOrders = upcomingOrdersDueSoon();
-  const closestDueSoonOrder = dueSoonOrders[0];
-  const unpaid = state.invoices.reduce((sum, invoice) => sum + Math.max(invoice.total - invoice.paid, 0), 0);
   const lowStock = state.inventory.filter((item) => item.qty <= item.alert);
-  const upcomingOrders = dashboardUpcomingOrders();
-  const visibleUpcomingOrders = state.dashboardPriorityExpanded ? upcomingOrders : upcomingOrders.slice(0, 1);
   const priorityNotes = dashboardPriorityNotes();
-  const upcomingWeek = dashboardUpcomingWeekLabel();
+  const attentionItems = dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, lowStock });
 
   return `
-    <section class="metric-grid">
-      ${statCard("Today's appointments", todaysAppointments.length, "2 fittings, 1 collection expected", "", "open-dashboard-metric", "appointments")}
-      ${statCard("Missing orders", missingOrders.length, closestMissingOrder ? `${closestMissingOrder.number} due ${formatDate(closestMissingOrder.due)}` : "All priority stock allocated", "", "open-dashboard-metric", "orders")}
-      ${statCard("Balance due", state.financeUnlocked ? money(unpaid) : "Locked", state.financeUnlocked ? "Across open invoices" : "Finance access required", "", "open-dashboard-metric", "balance")}
-      ${statCard("Due in 2 weeks", dueSoonOrders.length, closestDueSoonOrder ? `${closestDueSoonOrder.number} due ${formatDate(closestDueSoonOrder.due)}` : "No orders due soon", "", "open-dashboard-metric", "dueSoon")}
-    </section>
-    <section class="stack dashboard-stack">
-      <div class="panel" id="today-bookings">
+    <section class="dashboard-main-grid" id="today-bookings">
+      <div class="panel dashboard-bookings-panel">
         <div class="panel-header">
           <div>
-            <h3 class="panel-title">Today's bookings</h3>
-            <p class="panel-subtitle">Staff schedule for Friday, 1 May 2026.</p>
+            <h3 class="panel-title">${todaysAppointments.length} booking${todaysAppointments.length === 1 ? "" : "s"} today</h3>
+            <p class="panel-subtitle">Tap a booking to see appointment details and communication history.</p>
           </div>
-          <button class="ghost-button" data-view="bookings">${icon("calendar")} View calendar</button>
+          <button class="ghost-button" data-view="bookings">${icon("calendar")} Open calendar</button>
         </div>
-        <div class="list">
-          ${todaysAppointments.map((appt) => appointmentCard(appt, true)).join("") || emptyState("No appointments today.")}
+        <div class="dashboard-appointment-list">
+          ${todaysAppointments.map(dashboardAppointmentCard).join("") || emptyState("No appointments today.")}
         </div>
       </div>
-      <div class="panel">
+      <div class="panel dashboard-attention-panel">
         <div class="panel-header">
           <div>
-            <h3 class="panel-title">Upcoming orders</h3>
-            <p class="panel-subtitle dashboard-week-subtitle">Orders with due dates or fittings this week: ${upcomingWeek}.</p>
-          </div>
-          <button class="ghost-button" data-action="toggle-priority-orders">${icon("package")} ${state.dashboardPriorityExpanded ? "Show less" : "View all"}</button>
-        </div>
-        <div class="list">
-          ${visibleUpcomingOrders.map((order) => orderCard(order, true)).join("") || emptyState("No orders due or fitting this week.")}
-          ${!state.dashboardPriorityExpanded && upcomingOrders.length > visibleUpcomingOrders.length ? `<p class="meta">${upcomingOrders.length - visibleUpcomingOrders.length} more this week. Press View all to expand.</p>` : ""}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <h3 class="panel-title">Priority notes</h3>
-            <p class="panel-subtitle">Staff-marked fitting notes that need action.</p>
+            <h3 class="panel-title">Needs attention</h3>
+            <p class="panel-subtitle">Only the things staff may need to act on today.</p>
           </div>
         </div>
-        <div class="list">
-          ${priorityNotes
-            .map(
-              ({ order, customer, record }) => `
-                <div class="item-card priority-note-card">
-                  <div class="row wrap">
-                    <div>
-                      <p class="name">${order.number} • ${customer.name}</p>
-                      <p class="meta">${record.priorityDue ? `Priority due ${formatDate(record.priorityDue)}` : "Priority due date not set"} • Order due ${formatDate(order.due)}</p>
-                    </div>
-                    <span class="overdue-badge">Priority</span>
-                  </div>
-                  <p class="meta">${escapeHtml(record.additionalNotes || record.notes || "No note entered.")}</p>
-                </div>
-              `,
-            )
-            .join("") || emptyState("No priority fitting notes.")}
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <h3 class="panel-title">Low stock watch</h3>
-            <p class="panel-subtitle">Items at or below alert level.</p>
-          </div>
-        </div>
-        <div class="list">
-          ${lowStock
-            .map(
-              (item) => `
-                <div class="item-card">
-                  <div class="row">
-                    <div>
-                      <p class="name">${item.item}</p>
-                      <p class="meta">${item.size} ${item.color} • ${item.category}</p>
-                    </div>
-                    <strong>${item.qty} left</strong>
-                  </div>
-                </div>
-              `,
-            )
-            .join("") || emptyState("No low stock items.")}
+        <div class="attention-list">
+          ${attentionItems.map(dashboardAttentionCard).join("") || emptyState("Nothing urgent right now.")}
         </div>
       </div>
     </section>
+  `;
+}
+
+function dashboardAppointmentCard(appt) {
+  const typeTag = appointmentTypeTag(appt.type);
+  const statusMeta = appointmentStatusMeta(appt.status);
+  const comms = appointmentComms(appt);
+  const customer = getCustomer(appt.customerId);
+  return `
+    <button class="dashboard-appointment-card appointment-type-card-${typeTag.className}" type="button" data-action="open-appointment-detail" data-id="${appt.id}">
+      <span class="appointment-time">${appt.time}</span>
+      <span class="appointment-main">
+        <strong>${appt.name}</strong>
+        <small>${typeTag.label} • ${appt.staff}</small>
+      </span>
+      <span class="appointment-side">
+        <span class="appointment-status-text ${statusMeta.className}">
+          ${statusMeta.mark ? `<span class="appointment-status-mark">${statusMeta.mark}</span>` : ""}
+          ${appt.status}
+        </span>
+        <small>${customer.phone}</small>
+      </span>
+      <span class="appointment-comms-pill">${deliveryState(comms.confirmationStatus).label} / ${deliveryState(comms.reminderStatus).label}</span>
+    </button>
+  `;
+}
+
+function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, lowStock }) {
+  const fittingPayments = state.orders
+    .filter((order) => order.fittingDate && order.fittingDate >= DEMO_TODAY && Math.max(Math.ceil(order.total / 2) - order.paid, 0) > 0)
+    .sort((a, b) => `${a.fittingDate} ${a.fittingTime || ""}`.localeCompare(`${b.fittingDate} ${b.fittingTime || ""}`));
+  return [
+    ...priorityNotes.slice(0, 3).map(({ order, customer, record }) => ({
+      label: "Priority fitting note",
+      value: "!",
+      note: `${customer.name} • ${order.number}${record.priorityDue ? ` • Due ${formatDate(record.priorityDue)}` : ""}`,
+      detail: record.additionalNotes || record.notes || "Priority note marked with no note text.",
+      action: "orders",
+    })),
+    missingOrders.length
+      ? {
+          label: "Missing stock",
+          value: missingOrders.length,
+          note: `${missingOrders[0].number} due ${formatDate(missingOrders[0].due)}`,
+          action: "orders",
+        }
+      : null,
+    fittingPayments.length
+      ? {
+          label: "Fitting payment",
+          value: fittingPayments.length,
+          note: `${getCustomer(fittingPayments[0].customerId).name} needs ${money(Math.max(Math.ceil(fittingPayments[0].total / 2) - fittingPayments[0].paid, 0))} to reach 50%`,
+          action: "orders",
+        }
+      : null,
+    priorityNotes.length > 3
+      ? {
+          label: "More priority notes",
+          value: priorityNotes.length - 3,
+          note: `${priorityNotes.length - 3} more fitting note${priorityNotes.length - 3 === 1 ? "" : "s"} need review`,
+          action: "orders",
+        }
+      : null,
+    dueSoonOrders.length
+      ? {
+          label: "Due in 2 weeks",
+          value: dueSoonOrders.length,
+          note: `${dueSoonOrders[0].number} due ${formatDate(dueSoonOrders[0].due)}`,
+          action: "orders",
+        }
+      : null,
+    lowStock.length
+      ? {
+          label: "Low stock",
+          value: lowStock.length,
+          note: closestLowStockNote(lowStock),
+          action: "inventory",
+        }
+      : null,
+  ].filter(Boolean);
+}
+
+function closestLowStockNote(items) {
+  const item = items[0];
+  return `${item.item} • ${item.qty} left`;
+}
+
+function dashboardAttentionCard(item) {
+  return `
+    <button class="attention-card" type="button" data-view="${item.action}">
+      <span>
+        <strong>${item.label}</strong>
+        <small>${item.note}</small>
+        ${item.detail ? `<em>${escapeHtml(item.detail)}</em>` : ""}
+      </span>
+      <b>${item.value}</b>
+    </button>
   `;
 }
 
@@ -1797,27 +1966,22 @@ function renderBookings() {
       </div>
       ${
         calendarMode === "day"
-          ? ""
+          ? `<div class="calendar-agenda-inline">
+              <div class="panel-header compact-panel-header">
+                <div>
+                  <h3 class="panel-title">${calendarRangeTitle(calendarDate, calendarMode)}</h3>
+                  <p class="panel-subtitle">${visibleAppointments.length} appointment${visibleAppointments.length === 1 ? "" : "s"} in this ${calendarMode} view.</p>
+                </div>
+              </div>
+              <div class="list">
+                ${groupedAppointmentAgenda(visibleAppointments) || emptyState("No appointments in this view.")}
+              </div>
+            </div>`
           : `<div class="calendar-shell">
         ${renderCalendar(calendarDate, calendarMode)}
       </div>`
       }
     </section>
-    ${
-      calendarMode === "day"
-        ? `<section class="panel" style="margin-top: 16px;">
-        <div class="panel-header">
-          <div>
-            <h3 class="panel-title">${calendarRangeTitle(calendarDate, calendarMode)}</h3>
-            <p class="panel-subtitle">${visibleAppointments.length} appointment${visibleAppointments.length === 1 ? "" : "s"} in this ${calendarMode} view.</p>
-          </div>
-        </div>
-        <div class="list">
-          ${groupedAppointmentAgenda(visibleAppointments) || emptyState("No appointments in this view.")}
-        </div>
-    </section>`
-        : ""
-    }
     <section class="panel" style="margin-top: 16px;">
       <div class="panel-header">
         <div>
@@ -2208,7 +2372,7 @@ function renderOrders() {
       <div class="panel-header">
         <div>
           <h3 class="panel-title">Live order board</h3>
-          <p class="panel-subtitle">Workflow checks the rolling Tuesday 3-month stock window, allocates stock, then moves through fitting, tailoring, and collection.</p>
+          <p class="panel-subtitle">Workflow checks the rolling ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month stock window, allocates stock, then moves through fitting, tailoring, and collection.</p>
         </div>
         <button class="button gold" data-action="new-order">${icon("plus")} Create order</button>
       </div>
@@ -2298,14 +2462,14 @@ function renderOrderStageModal() {
 function orderStageConfig(status) {
   return {
     Missing: {
-      description: "Missing orders inside the current Tuesday 3-month window",
+      description: `Missing orders inside the current ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month window`,
       overdueDate: "due",
       overdueLabel: "Order overdue",
       sortBy: "due",
       sortLabel: "sorted by earliest due date",
     },
     Unprocessed: {
-      description: "Orders outside the current Tuesday 3-month window",
+      description: `Orders outside the current ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month window`,
       overdueDate: "due",
       overdueLabel: "Order overdue",
       sortBy: "due",
@@ -2814,11 +2978,11 @@ function manualCommittedForItem(item) {
 }
 
 function allocationWindowEnd() {
-  return addMonths(stockAllocationDate(), STOCK_ALLOCATION_MONTHS);
+  return addMonths(stockAllocationDate(), Number(appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)));
 }
 
 function stockAllocationDate() {
-  return mostRecentTuesday(todayKey());
+  return mostRecentWeekday(todayKey(), appSetting("stockAllocationDay", "Tuesday"));
 }
 
 function isInStockAllocationWindow(order) {
@@ -2827,10 +2991,23 @@ function isInStockAllocationWindow(order) {
 }
 
 function mostRecentTuesday(dateString) {
+  return mostRecentWeekday(dateString, "Tuesday");
+}
+
+function mostRecentWeekday(dateString, weekday) {
+  const weekdayIndex = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  }[weekday] ?? 2;
   const date = new Date(`${dateString}T12:00:00`);
   const day = date.getDay();
-  const daysSinceTuesday = (day + 5) % 7;
-  date.setDate(date.getDate() - daysSinceTuesday);
+  const daysSinceWeekday = (day - weekdayIndex + 7) % 7;
+  date.setDate(date.getDate() - daysSinceWeekday);
   return date.toISOString().slice(0, 10);
 }
 
@@ -3076,7 +3253,7 @@ function orderStockMeta(order) {
   const item = state.inventory.find((stock) => stock.id === order.inventoryItemId);
   if (!item) return order.stockStatus || "";
   const available = inventoryAvailable(item);
-  if (order.stockStatus === "Future allocation") return `${inventoryOrderLabel(item)} committed • outside Tuesday ${STOCK_ALLOCATION_MONTHS}-month allocation window`;
+  if (order.stockStatus === "Future allocation") return `${inventoryOrderLabel(item)} committed • outside ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month allocation window`;
   if (order.status === "Missing" || order.stockStatus === "Missing") return `${inventoryOrderLabel(item)} missing`;
   return `${inventoryOrderLabel(item)} reserved • ${available} available now`;
 }
@@ -3116,6 +3293,206 @@ function staffRotaRows(clock, todaysAppointments) {
       `;
     })
     .join("");
+}
+
+function renderSettings() {
+  const settings = state.settings || seedState.settings;
+  const users = state.staffUsers || [];
+  const seniorCount = users.filter((user) => user.role === "Senior staff").length;
+  const financeUsers = users.filter((user) => user.financeAccess).length;
+  return `
+    <section class="metric-grid settings-metrics">
+      ${statCard("Users", users.length, `${seniorCount} senior staff`)}
+      ${statCard("Finance access", financeUsers, settings.financeAccess)}
+      ${statCard("Booking window", `${settings.bookingWindowDays} days`, "Customer consultations")}
+      ${statCard("Stock allocation", settings.stockAllocationDay, `${settings.stockAllocationMonths}-month rolling window`)}
+    </section>
+    <section class="settings-grid" style="margin-top: 16px;">
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Users and roles</h3>
+            <p class="panel-subtitle">Add staff and decide who can see owner-level finance reports.</p>
+          </div>
+        </div>
+        <div class="list">
+          ${users
+            .map(
+              (user) => `
+                <article class="settings-user-row">
+                  <div>
+                    <p class="name">${user.name}</p>
+                    <p class="meta">${user.role} • ${user.status || "Active"}</p>
+                  </div>
+                  <div class="row compact-actions">
+                    ${user.financeAccess ? `<span class="status paid">Finance</span>` : `<span class="status pending">No finance</span>`}
+                  </div>
+                </article>
+              `,
+            )
+            .join("")}
+        </div>
+        <form id="settings-user-form" class="form-grid settings-inline-form">
+          <div class="field">
+            <label for="settings-user-name">New staff name</label>
+            <input id="settings-user-name" name="name" required placeholder="Staff name" />
+          </div>
+          <div class="field">
+            <label for="settings-user-role">Role</label>
+            <select id="settings-user-role" name="role">
+              <option>Staff</option>
+              <option>Senior staff</option>
+              <option>Owner</option>
+            </select>
+          </div>
+          <label class="check-field settings-check" for="settings-user-finance">
+            <input id="settings-user-finance" name="financeAccess" type="checkbox" />
+            <span>Can access finance reports</span>
+          </label>
+          <div class="form-actions">
+            <button class="button gold" type="submit">${icon("plus")} Add user</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Theme and app feel</h3>
+            <p class="panel-subtitle">Keep the prototype consistent on iPhone, iPad, and desktop.</p>
+          </div>
+        </div>
+        <form id="settings-theme-form" class="settings-option-list">
+          ${["Apple clean", "Material neutral", "High contrast"].map(
+            (theme) => `
+              <label class="settings-option ${settings.theme === theme ? "selected" : ""}">
+                <input type="radio" name="theme" value="${theme}" ${settings.theme === theme ? "checked" : ""} />
+                <span>
+                  <strong>${theme}</strong>
+                  <small>${settingsThemeDescription(theme)}</small>
+                </span>
+              </label>
+            `,
+          ).join("")}
+          <div class="form-actions">
+            <button class="ghost-button" type="submit">${icon("check")} Save theme</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Booking rules</h3>
+            <p class="panel-subtitle">Controls for the public booking page and staff calendar.</p>
+          </div>
+        </div>
+        <form id="settings-rules-form" class="form-grid">
+          <div class="field">
+            <label for="settings-booking-window">Consultation booking window</label>
+            <input id="settings-booking-window" name="bookingWindowDays" type="number" min="1" step="1" value="${settings.bookingWindowDays}" />
+          </div>
+          <div class="field">
+            <label for="settings-reminder">Default reminder</label>
+            <select id="settings-reminder" name="defaultReminder">
+              ${["Day before", "Two days before", "Same morning"].map((value) => `<option ${settings.defaultReminder === value ? "selected" : ""}>${value}</option>`).join("")}
+            </select>
+          </div>
+          <div class="settings-summary-card full">
+            <strong>Current logic</strong>
+            <span>Customers can only book free consultation slots inside this window. Fittings and collections require an order number and start from the day after the order due date.</span>
+          </div>
+          <div class="form-actions">
+            <button class="ghost-button" type="submit">${icon("check")} Save booking rules</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Orders and inventory</h3>
+            <p class="panel-subtitle">Stock allocation and payment rules used by the order tracker.</p>
+          </div>
+        </div>
+        <form id="settings-stock-form" class="form-grid">
+          <div class="field">
+            <label for="settings-allocation-day">Allocation check day</label>
+            <select id="settings-allocation-day" name="stockAllocationDay">
+              ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].map((day) => `<option ${settings.stockAllocationDay === day ? "selected" : ""}>${day}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="settings-allocation-months">Rolling allocation window</label>
+            <input id="settings-allocation-months" name="stockAllocationMonths" type="number" min="1" max="12" step="1" value="${settings.stockAllocationMonths}" />
+          </div>
+          <div class="field">
+            <label for="settings-payment-target">Fitting payment target</label>
+            <input id="settings-payment-target" name="fittingPaymentTarget" type="number" min="0" max="100" step="5" value="${settings.fittingPaymentTarget}" />
+          </div>
+          <div class="settings-summary-card full">
+            <strong>Current workflow</strong>
+            <span>Orders inside the rolling window are allocated by due-date priority. Missing stock stays urgent, ready orders need a staff-set location, and fitting payment target is checked before fitting.</span>
+          </div>
+          <div class="form-actions">
+            <button class="ghost-button" type="submit">${icon("check")} Save stock rules</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Finance and reports</h3>
+            <p class="panel-subtitle">Keep reports locked while staff can still take payments from order files.</p>
+          </div>
+        </div>
+        <form id="settings-finance-form" class="form-grid">
+          <div class="field">
+            <label for="settings-finance-access">Report access</label>
+            <select id="settings-finance-access" name="financeAccess">
+              ${["Owner only", "Owner and senior staff", "All staff"].map((value) => `<option ${settings.financeAccess === value ? "selected" : ""}>${value}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="settings-invoice-password">Prototype invoice password</label>
+            <input id="settings-invoice-password" name="invoicePassword" value="${escapeAttribute(settings.invoicePassword || FINANCE_PASSWORD)}" />
+          </div>
+          <div class="settings-summary-card full">
+            <strong>Operational balance visibility</strong>
+            <span>Order-level balances remain visible to staff. Main invoice reports stay locked behind finance access.</span>
+          </div>
+          <div class="form-actions">
+            <button class="ghost-button" type="submit">${icon("check")} Save finance settings</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Communication defaults</h3>
+            <p class="panel-subtitle">Useful admin checks for confirmations, reminders, and follow-ups.</p>
+          </div>
+        </div>
+        <div class="settings-summary-list">
+          <div><strong>Booking confirmation</strong><span>Email + text after customer or staff books.</span></div>
+          <div><strong>Appointment reminder</strong><span>${settings.defaultReminder} for booked appointments.</span></div>
+          <div><strong>No-sale follow-up</strong><span>Scheduled after attended consultation with no order.</span></div>
+          <div><strong>Deposit reminder</strong><span>Sent when deposit is below the ${settings.fittingPaymentTarget}% fitting target.</span></div>
+        </div>
+        <div class="form-actions">
+          <button class="ghost-button" type="button" data-view="communications">${icon("message")} Manage templates</button>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function settingsThemeDescription(theme) {
+  if (theme === "Apple clean") return "Soft cards, simple controls, and iPhone-friendly spacing.";
+  if (theme === "Material neutral") return "Calm Material Design-style cards, labels, and buttons.";
+  return "Sharper contrast for busy shop-floor use.";
 }
 
 function renderInvoices() {
@@ -3343,7 +3720,7 @@ function bookingForm(id, publicMode = false) {
       }
       <div class="field">
         <label for="${id}-date">Date</label>
-        <input id="${id}-date" name="date" type="date" required value="${defaultDate}" data-booking-date min="${DEMO_TODAY}" max="${addDays(DEMO_TODAY, 14)}" />
+        <input id="${id}-date" name="date" type="date" required value="${defaultDate}" data-booking-date min="${DEMO_TODAY}" max="${addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)))}" />
       </div>
       <div class="field">
         <label for="${id}-time">Time</label>
@@ -3390,7 +3767,7 @@ function bookingGuidance(type, date, publicMode = false, orderNumber = "") {
     if (!order) return "Order number not found. Check the order file number before booking.";
     return `This can be booked from ${formatDate(addDays(order.due, 1))} onwards.`;
   }
-  return `Consultations can be booked from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, 14))}.`;
+  return `Consultations can be booked from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14))))}.`;
 }
 
 function requiresOrderNumber(type) {
@@ -3427,9 +3804,9 @@ function validateBookingRequest({ type, date, time, publicMode = false, orderNum
     if (date < earliest) return `Fittings and collections can only be booked from ${formatDate(earliest)} onwards for ${order.number}.`;
     return "";
   }
-  const latestConsultation = addDays(DEMO_TODAY, 14);
+  const latestConsultation = addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)));
   if (date < DEMO_TODAY || date > latestConsultation) {
-    return `Consultations can only be booked up to two weeks in advance, from ${formatDate(DEMO_TODAY)} to ${formatDate(latestConsultation)}.`;
+    return `Consultations can only be booked up to ${appSetting("bookingWindowDays", 14)} days in advance, from ${formatDate(DEMO_TODAY)} to ${formatDate(latestConsultation)}.`;
   }
   return "";
 }
@@ -3454,7 +3831,7 @@ function updateBookingAvailability(form) {
     if (dateInput.value && dateInput.value < dateInput.min) dateInput.value = dateInput.min;
   } else if (publicMode && !requiresOrderNumber(type)) {
     dateInput.min = DEMO_TODAY;
-    dateInput.max = addDays(DEMO_TODAY, 14);
+    dateInput.max = addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)));
     if (dateInput.value < dateInput.min || dateInput.value > dateInput.max) dateInput.value = addDays(DEMO_TODAY, 2);
   }
   if (timeInput) {
@@ -4075,7 +4452,7 @@ function groupedAppointmentAgenda(appointments) {
             <span>${dayAppointments.length} appointment${dayAppointments.length === 1 ? "" : "s"}</span>
           </div>
           <div class="list">
-            ${dayAppointments.map((appt) => appointmentCard(appt, true, { hideDate: true })).join("")}
+            ${dayAppointments.map(dashboardAppointmentCard).join("")}
           </div>
         </section>
       `,
@@ -4278,6 +4655,16 @@ function bindEvents() {
       form.addEventListener("submit", handleTemplateEditSubmit);
     } else if (form.id === "inventory-form") {
       form.addEventListener("submit", handleInventorySubmit);
+    } else if (form.id === "settings-user-form") {
+      form.addEventListener("submit", handleSettingsUserSubmit);
+    } else if (form.id === "settings-theme-form") {
+      form.addEventListener("submit", handleSettingsThemeSubmit);
+    } else if (form.id === "settings-rules-form") {
+      form.addEventListener("submit", handleSettingsRulesSubmit);
+    } else if (form.id === "settings-stock-form") {
+      form.addEventListener("submit", handleSettingsStockSubmit);
+    } else if (form.id === "settings-finance-form") {
+      form.addEventListener("submit", handleSettingsFinanceSubmit);
     } else if (form.id === "finance-access-form") {
       form.addEventListener("submit", handleFinanceAccessSubmit);
     } else {
@@ -4315,6 +4702,7 @@ function handleAction(button) {
   if (action === "sale-from-appointment") openNewOrderForm(id, button.dataset.appointment);
   if (action === "close-modal") closeModal();
   if (action === "open-dashboard-metric") openDashboardMetric(id);
+  if (action === "open-appointment-detail") openAppointmentDetail(id);
   if (action === "show-today-bookings") showTodayBookings();
   if (action === "toggle-priority-orders") togglePriorityOrders();
   if (action === "toggle-order") toggleOrderDetail(id);
@@ -4373,6 +4761,13 @@ function closeModal() {
 
 function openDashboardMetric(metric) {
   state.modal = { type: "dashboard-metric", metric };
+  state.toast = "";
+  saveState();
+  render();
+}
+
+function openAppointmentDetail(appointmentId) {
+  state.modal = { type: "appointment-detail", appointmentId };
   state.toast = "";
   saveState();
   render();
@@ -4805,7 +5200,7 @@ function handleOrderSubmit(event) {
     ? order.stockStatus === "Reserved"
       ? " Stock has been allocated by due-date priority."
       : order.stockStatus === "Future allocation"
-        ? ` Stock is committed and will be allocated when the due date enters the Tuesday ${STOCK_ALLOCATION_MONTHS}-month planning window.`
+        ? ` Stock is committed and will be allocated when the due date enters the ${appSetting("stockAllocationDay", "Tuesday")} ${appSetting("stockAllocationMonths", STOCK_ALLOCATION_MONTHS)}-month planning window.`
         : " Item is out of stock, so the order is in Missing."
     : " Custom order is Unprocessed.";
   const allocationMessage = allocationResult.newlyAllocated > 1 ? ` ${allocationResult.newlyAllocated} priority orders now have stock reserved.` : "";
@@ -5022,11 +5417,88 @@ function handleInventorySubmit(event) {
   render();
 }
 
+function handleSettingsUserSubmit(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get("name") || "").trim();
+  if (!name) return;
+  state.staffUsers = state.staffUsers || [];
+  if (state.staffUsers.some((user) => user.name.toLowerCase() === name.toLowerCase())) {
+    state.toast = `${name} is already a user.`;
+    render();
+    return;
+  }
+  state.staffUsers.push({
+    id: createId("u"),
+    name,
+    role: String(data.get("role") || "Staff"),
+    financeAccess: data.get("financeAccess") === "on",
+    status: "Active",
+  });
+  state.staffMembers = [...new Set([...(state.staffMembers || []), name])];
+  state.toast = `${name} added to staff users.`;
+  saveState();
+  render();
+}
+
+function handleSettingsThemeSubmit(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  state.settings = { ...seedState.settings, ...(state.settings || {}), theme: String(data.get("theme") || "Apple clean") };
+  state.toast = `${state.settings.theme} theme selected.`;
+  saveState();
+  render();
+}
+
+function handleSettingsRulesSubmit(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  state.settings = {
+    ...seedState.settings,
+    ...(state.settings || {}),
+    bookingWindowDays: Math.max(1, Number(data.get("bookingWindowDays") || 14)),
+    defaultReminder: String(data.get("defaultReminder") || "Day before"),
+  };
+  state.toast = "Booking rules updated.";
+  saveState();
+  render();
+}
+
+function handleSettingsStockSubmit(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  state.settings = {
+    ...seedState.settings,
+    ...(state.settings || {}),
+    stockAllocationDay: String(data.get("stockAllocationDay") || "Tuesday"),
+    stockAllocationMonths: Math.max(1, Number(data.get("stockAllocationMonths") || STOCK_ALLOCATION_MONTHS)),
+    fittingPaymentTarget: Math.min(100, Math.max(0, Number(data.get("fittingPaymentTarget") || 50))),
+  };
+  allocateAllStock();
+  state.toast = "Order and inventory rules updated.";
+  saveState();
+  render();
+}
+
+function handleSettingsFinanceSubmit(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  state.settings = {
+    ...seedState.settings,
+    ...(state.settings || {}),
+    financeAccess: String(data.get("financeAccess") || "Owner only"),
+    invoicePassword: String(data.get("invoicePassword") || FINANCE_PASSWORD).trim() || FINANCE_PASSWORD,
+  };
+  state.toast = "Finance settings updated.";
+  saveState();
+  render();
+}
+
 function handleFinanceAccessSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const password = String(data.get("password") || "");
-  if (password !== FINANCE_PASSWORD) {
+  if (password !== appSetting("invoicePassword", FINANCE_PASSWORD)) {
     state.toast = "Incorrect finance password.";
     saveState();
     render();
@@ -5504,6 +5976,7 @@ function icon(name) {
     package: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m21 8-9-5-9 5 9 5 9-5Z"></path><path d="M3 8v8l9 5 9-5V8"></path><path d="M12 13v8"></path></svg>`,
     ruler: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="m16 2 6 6L8 22l-6-6L16 2Z"></path><path d="m7 17 2 2M10 14l2 2M13 11l2 2M16 8l2 2"></path></svg>`,
     invoice: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M7 3h10a2 2 0 0 1 2 2v16l-3-2-3 2-3-2-3 2-2-1.4V5a2 2 0 0 1 2-2Z"></path><path d="M8 8h8M8 12h8M8 16h5"></path></svg>`,
+    settings: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.14.39.36.74.66 1 .3.26.69.4 1.1.4H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.6Z"></path></svg>`,
     external: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>`,
     refresh: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M21 12a9 9 0 0 1-15.3 6.4L3 16"></path><path d="M3 21v-5h5"></path><path d="M3 12A9 9 0 0 1 18.3 5.6L21 8"></path><path d="M21 3v5h-5"></path></svg>`,
     plus: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg>`,
