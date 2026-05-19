@@ -890,15 +890,15 @@ function renderNewOrderModal() {
         <div class="modal-header invoice-modal-header">
           <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
           <div>
-            <h3 id="new-order-title" class="modal-title">Invoice</h3>
-            <p class="panel-subtitle">Create the order, invoice, fitting, and stock commitments.</p>
+            <h3 id="new-order-title" class="modal-title">Quote to invoice</h3>
+            <p class="panel-subtitle">Measure the customer, prepare a quote, then create the invoice if they proceed.</p>
           </div>
         </div>
         <form id="new-order-form" class="invoice-composer">
           <div class="invoice-scroll-body">
             <section class="invoice-section">
             <div class="invoice-section-head">
-              <h4>Customer</h4>
+              <h4>Step 1: Customer and measurements</h4>
             </div>
             <div class="invoice-customer-card">
               <div class="field full">
@@ -962,8 +962,8 @@ function renderNewOrderModal() {
             </section>
             <section class="invoice-section">
             <div class="invoice-section-head">
-              <h4>Items</h4>
-              <span class="meta">Search, then tap items to add them.</span>
+              <h4>Build quote</h4>
+              <span class="meta">Search, add items, adjust the description, then show the quote preview.</span>
             </div>
             <div class="field full">
               <label for="order-item-search">Search items</label>
@@ -990,6 +990,30 @@ function renderNewOrderModal() {
                 <label for="order-total">Invoice total</label>
                 <input id="order-total" name="total" type="number" min="0" step="1" required value="650" data-order-total />
               </div>
+              <div class="field">
+                <label for="order-discount">Discount</label>
+                <input id="order-discount" name="discount" type="number" min="0" step="1" value="0" data-order-discount />
+              </div>
+            </div>
+            <div class="quote-preview-card">
+              <div>
+                <span>PDF quote preview</span>
+                <strong data-quote-total>${money(650)}</strong>
+                <small>Show this to the customer before creating the invoice.</small>
+              </div>
+              <div class="quote-preview-lines">
+                <p><span>Inventory total</span><strong data-quote-inventory>${money(0)}</strong></p>
+                <p><span>Discount</span><strong data-quote-discount>${money(0)}</strong></p>
+                <p><span>Quote total</span><strong data-quote-balance>${money(650)}</strong></p>
+              </div>
+            </div>
+            </section>
+            <section class="invoice-section">
+            <div>
+              <h4 class="panel-title">Step 2: Create invoice and take deposit</h4>
+              <p class="panel-subtitle">If the customer is happy to proceed, record the deposit and send the full invoice PDF.</p>
+            </div>
+            <div class="invoice-compact-grid">
               <div class="field">
                 <label for="order-paid">Deposit / paid today</label>
                 <input id="order-paid" name="paid" type="number" min="0" step="1" value="0" data-order-paid />
@@ -1055,7 +1079,7 @@ function renderNewOrderModal() {
               <strong data-amount-due>${money(650)}</strong>
             </div>
             <button class="ghost-button" type="button" data-action="close-modal">Cancel</button>
-            <button class="button gold" type="submit">${icon("invoice")} Save</button>
+            <button class="button gold" type="submit">${icon("invoice")} Create invoice</button>
           </div>
         </form>
       </section>
@@ -1082,12 +1106,13 @@ function renderOrderItemPicker() {
         .map((item) => {
           const available = inventoryAvailable(item);
           return `
-            <label class="invoice-item-row" for="order-item-${item.id}" data-item-search-text="${escapeAttribute(`${inventoryOrderLabel(item)} ${item.category || ""} ${item.color || ""} ${item.size || ""} ${item.material || ""}`.toLowerCase())}" hidden>
+            <label class="invoice-item-row" for="order-item-${item.id}" data-item-search-text="${escapeAttribute(`${inventoryOrderLabel(item)} ${item.category || ""} ${item.color || ""} ${item.size || ""} ${item.material || ""} ${item.description || ""}`.toLowerCase())}" hidden>
               <input id="order-item-${item.id}" name="items" type="checkbox" value="${escapeAttribute(item.id)}" data-order-item-choice />
               <span class="invoice-item-icon">${icon("invoice")}</span>
               <span>
                 <strong>${inventoryParentName(item)}</strong>
                 <em>${inventoryVariationLabel(item)}${item.color ? ` • ${item.color}` : ""}</em>
+                ${item.description ? `<small>${escapeHtml(item.description)}</small>` : ""}
                 <small>${available} available${available <= 0 ? " • Missing order" : ""}</small>
               </span>
               <b>${money(inventoryPrice(item))}</b>
@@ -1562,6 +1587,10 @@ function renderInventoryModal() {
           <div class="field">
             <label for="inventory-material">Material / detail</label>
             <input id="inventory-material" name="material" placeholder="Suede shawl lapel, satin trim..." />
+          </div>
+          <div class="field full">
+            <label for="inventory-description">Default description</label>
+            <textarea id="inventory-description" name="description" placeholder="Default invoice description for this item. You can edit it per invoice later."></textarea>
           </div>
           <div class="field">
             <label for="inventory-qty">Quantity</label>
@@ -4762,7 +4791,7 @@ function bindEvents() {
     filterOrderItemPicker(itemSearchInput.value);
   }
 
-  document.querySelectorAll("[data-order-total], [data-order-paid]").forEach((input) => {
+  document.querySelectorAll("[data-order-total], [data-order-discount], [data-order-paid]").forEach((input) => {
     input.addEventListener("input", () => {
       if (input.matches("[data-order-total]")) input.dataset.manualTotal = "true";
       updateOrderInvoiceSummary();
@@ -5121,8 +5150,10 @@ function updateOrderSelectionSummary() {
   const customSelected = values.includes("__custom");
   const total = items.reduce((sum, item) => sum + inventoryPrice(item), 0);
   const totalInput = document.querySelector("[data-order-total]");
+  const discountInput = document.querySelector("[data-order-discount]");
+  const discount = Math.max(0, Number(discountInput?.value || 0));
   if (totalInput && total > 0 && (!totalInput.dataset.manualTotal || Number(totalInput.value || 0) === 650)) {
-    totalInput.value = total;
+    totalInput.value = Math.max(total - discount, 0);
   }
   summary.innerHTML = `
     <div class="row wrap">
@@ -5135,7 +5166,13 @@ function updateOrderSelectionSummary() {
           .map(
             (item) => `
               <div class="selection-line">
-                <span>${inventoryOrderLabel(item)}</span>
+                <span>
+                  <strong>${inventoryOrderLabel(item)}</strong>
+                  <label class="invoice-line-description" for="order-description-${item.id}">
+                    <span>Invoice description</span>
+                    <textarea id="order-description-${item.id}" name="itemDescription_${item.id}" placeholder="Description for this invoice only">${escapeHtml(item.description || inventoryOrderLabel(item))}</textarea>
+                  </label>
+                </span>
                 <strong>${money(inventoryPrice(item))}</strong>
               </div>
             `,
@@ -5171,12 +5208,29 @@ function filterOrderItemPicker(query) {
 
 function updateOrderInvoiceSummary() {
   const totalInput = document.querySelector("[data-order-total]");
+  const discountInput = document.querySelector("[data-order-discount]");
   const paidInput = document.querySelector("[data-order-paid]");
   const amountDue = document.querySelector("[data-amount-due]");
-  if (!amountDue) return;
+  const quoteInventory = document.querySelector("[data-quote-inventory]");
+  const quoteDiscount = document.querySelector("[data-quote-discount]");
+  const quoteTotal = document.querySelector("[data-quote-total]");
+  const quoteBalance = document.querySelector("[data-quote-balance]");
+  const inventoryTotal = selectedOrderItemValues()
+    .filter((value) => value !== "__custom")
+    .map(selectedInventoryItem)
+    .filter(Boolean)
+    .reduce((sum, item) => sum + inventoryPrice(item), 0);
+  const discount = Math.max(0, Number(discountInput?.value || 0));
+  if (totalInput && inventoryTotal > 0 && !totalInput.dataset.manualTotal) {
+    totalInput.value = Math.max(inventoryTotal - discount, 0);
+  }
   const total = Math.max(0, Number(totalInput?.value || 0));
   const paid = Math.max(0, Number(paidInput?.value || 0));
-  amountDue.textContent = money(Math.max(total - paid, 0));
+  if (quoteInventory) quoteInventory.textContent = money(inventoryTotal);
+  if (quoteDiscount) quoteDiscount.textContent = money(discount);
+  if (quoteTotal) quoteTotal.textContent = money(total);
+  if (quoteBalance) quoteBalance.textContent = money(total);
+  if (amountDue) amountDue.textContent = money(Math.max(total - paid, 0));
 }
 
 function filterOrderStage(input) {
@@ -5250,6 +5304,7 @@ function handleOrderSubmit(event) {
     if (value) customer.measurements[measure] = value;
   });
 
+  const discount = Math.max(0, Number(data.get("discount")) || 0);
   const total = Math.max(0, Number(data.get("total")) || 0);
   const paid = Math.min(total, Math.max(0, Number(data.get("paid")) || 0));
   const fittingDate = String(data.get("fittingDate") || "");
@@ -5269,6 +5324,7 @@ function handleOrderSubmit(event) {
   const orderInventoryItems = inventoryItems.map((item) => ({
     id: item.id,
     label: inventoryOrderLabel(item),
+    description: String(data.get(`itemDescription_${item.id}`) || item.description || inventoryOrderLabel(item)).trim(),
     price: inventoryPrice(item),
     stockAvailableAtOrder: inventoryAvailable(item),
     stockStatus: "Pending allocation",
@@ -5293,6 +5349,7 @@ function handleOrderSubmit(event) {
     status: "Unprocessed",
     tailor: "Not sent",
     total,
+    discount,
     paid,
     createdBy: saleStaff,
     createdDate: "2026-05-01",
@@ -5325,6 +5382,7 @@ function handleOrderSubmit(event) {
     customerId: customer.id,
     orderId: order.id,
     total,
+    discount,
     paid,
     dueDate: order.due,
     method: paid > 0 ? String(data.get("method") || "Manual payment") : "Not paid",
@@ -5562,6 +5620,7 @@ function handleInventorySubmit(event) {
     .filter(Boolean);
   const color = String(data.get("color") || "").trim();
   const material = String(data.get("material") || "").trim();
+  const description = String(data.get("description") || "").trim();
   const qty = Math.max(0, Number(data.get("qty") || 0));
   const alert = Math.max(0, Number(data.get("alert") || 0));
   const committed = Math.max(0, Number(data.get("committed") || 0));
@@ -5579,6 +5638,7 @@ function handleInventorySubmit(event) {
     color: variationType === "Colour" ? variationValue : color || "-",
     size: variationType === "Size" ? variationValue : "-",
     material: variationType === "Material" ? variationValue : material,
+    description,
     qty,
     alert,
     committed,

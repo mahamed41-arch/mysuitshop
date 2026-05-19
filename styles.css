@@ -2533,6 +2533,68 @@ button.measure {
   border-radius: 8px;
 }
 
+.selection-line > span {
+  display: grid;
+  gap: 8px;
+}
+
+.invoice-line-description {
+  display: grid;
+  gap: 5px;
+}
+
+.invoice-line-description span {
+  color: var(--mui-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.invoice-line-description textarea {
+  min-height: 54px;
+  resize: vertical;
+}
+
+.quote-preview-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.55fr);
+  gap: 14px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--mui-line);
+  border-radius: 8px;
+}
+
+.quote-preview-card span,
+.quote-preview-card small {
+  color: var(--mui-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.quote-preview-card strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--mui-text);
+  font-size: 22px;
+}
+
+.quote-preview-lines {
+  display: grid;
+  gap: 7px;
+}
+
+.quote-preview-lines p {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+}
+
+.quote-preview-lines strong {
+  margin: 0;
+  font-size: 14px;
+}
+
 .stock-price-input {
   width: 86px;
   min-height: 34px;
@@ -6136,6 +6198,10 @@ td {
 
   .order-filter-bar .segmented-control button {
     min-width: 0;
+  }
+
+  .quote-preview-card {
+    grid-template-columns: 1fr;
   }
 
   .today-booking-summary {
