@@ -549,6 +549,7 @@ function render() {
           ${renderView()}
           </main>
         </div>
+        ${renderMobileTabbar()}
         ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
         ${renderModal()}
         ${renderStaffLoginModal()}
@@ -583,7 +584,7 @@ function renderSidebar() {
           <p class="brand-subtitle">CRM, bookings, orders, stock</p>
         </div>
       </div>
-      <div class="nav-section">
+      <div class="nav-section staff-nav">
         <span class="nav-label">Staff workspace</span>
         ${navItems
           .map(
@@ -596,7 +597,7 @@ function renderSidebar() {
             `,
           )
           .join("")}
-        <details class="mobile-more-nav" ${moreActive ? "open" : ""}>
+        <details class="mobile-more-nav">
           <summary class="nav-button ${moreActive ? "active" : ""}">
             <span class="icon">${icon("more")}</span>
             <span>More</span>
@@ -617,7 +618,7 @@ function renderSidebar() {
           </div>
         </details>
       </div>
-      <div class="nav-section">
+      <div class="nav-section customer-nav">
         <span class="nav-label">Customer access</span>
         <button class="nav-button more-mobile-nav ${state.currentView === "bookingPortal" ? "active" : ""}" data-view="bookingPortal" title="Public booking page">
           <span class="icon">${icon("external")}</span>
@@ -629,6 +630,47 @@ function renderSidebar() {
         <span>Use the sample data freely. Changes are saved in this browser and can be reset any time.</span>
       </div>
     </aside>
+  `;
+}
+
+function renderMobileTabbar() {
+  const openOrders = state.orders.filter((order) => !["Collected", "Cancelled"].includes(order.status)).length;
+  const moreItems = [
+    ...navItems.filter((item) => !["dashboard", "bookings"].includes(item.id)),
+    { id: "bookingPortal", label: "Booking page", icon: "external" },
+  ];
+  const moreActive = moreItems.some((item) => item.id === state.currentView);
+  return `
+    <nav class="mobile-tabbar" aria-label="Main navigation">
+      <button class="mobile-tab ${state.currentView === "dashboard" ? "active" : ""}" data-view="dashboard">
+        <span class="icon">${icon("dashboard")}</span>
+        <span>Dashboard</span>
+      </button>
+      <button class="mobile-tab ${state.currentView === "bookings" ? "active" : ""}" data-view="bookings">
+        <span class="icon">${icon("calendar")}</span>
+        <span>Bookings</span>
+      </button>
+      <details class="mobile-tab-more">
+        <summary class="mobile-tab ${moreActive ? "active" : ""}">
+          <span class="icon">${icon("more")}</span>
+          <span>More</span>
+          ${openOrders ? `<span class="badge">${openOrders}</span>` : ""}
+        </summary>
+        <div class="mobile-tab-menu">
+          ${moreItems
+            .map(
+              (item) => `
+                <button class="nav-button ${state.currentView === item.id ? "active" : ""}" data-view="${item.id}" title="${item.label}">
+                  <span class="icon">${icon(item.icon)}</span>
+                  <span>${item.label}</span>
+                  ${item.id === "orders" ? `<span class="badge">${openOrders}</span>` : ""}
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+      </details>
+    </nav>
   `;
 }
 
