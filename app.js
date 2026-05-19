@@ -1581,10 +1581,10 @@ function renderDashboard() {
   const closestDueSoonOrder = dueSoonOrders[0];
   const unpaid = state.invoices.reduce((sum, invoice) => sum + Math.max(invoice.total - invoice.paid, 0), 0);
   const lowStock = state.inventory.filter((item) => item.qty <= item.alert);
-  const upcomingOrders = state.orders
-    .filter((order) => !["Collected", "Cancelled"].includes(order.status))
-    .sort(sortByClosestDueDate);
-  const visibleUpcomingOrders = state.dashboardPriorityExpanded ? upcomingOrders : upcomingOrders.slice(0, 2);
+  const upcomingOrders = dashboardUpcomingOrders();
+  const visibleUpcomingOrders = state.dashboardPriorityExpanded ? upcomingOrders : upcomingOrders.slice(0, 1);
+  const priorityNotes = dashboardPriorityNotes();
+  const upcomingWeek = dashboardUpcomingWeekLabel();
 
   return `
     <section class="metric-grid">
@@ -1610,13 +1610,39 @@ function renderDashboard() {
         <div class="panel-header">
           <div>
             <h3 class="panel-title">Upcoming orders</h3>
-            <p class="panel-subtitle">Orders due soon or waiting on tailoring action.</p>
+            <p class="panel-subtitle dashboard-week-subtitle">Orders with due dates or fittings this week: ${upcomingWeek}.</p>
           </div>
           <button class="ghost-button" data-action="toggle-priority-orders">${icon("package")} ${state.dashboardPriorityExpanded ? "Show less" : "View all"}</button>
         </div>
         <div class="list">
-          ${visibleUpcomingOrders.map((order) => orderCard(order, true)).join("")}
-          ${!state.dashboardPriorityExpanded && upcomingOrders.length > visibleUpcomingOrders.length ? `<p class="meta">${upcomingOrders.length - visibleUpcomingOrders.length} more upcoming orders hidden. Press View all to expand.</p>` : ""}
+          ${visibleUpcomingOrders.map((order) => orderCard(order, true)).join("") || emptyState("No orders due or fitting this week.")}
+          ${!state.dashboardPriorityExpanded && upcomingOrders.length > visibleUpcomingOrders.length ? `<p class="meta">${upcomingOrders.length - visibleUpcomingOrders.length} more this week. Press View all to expand.</p>` : ""}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">Priority notes</h3>
+            <p class="panel-subtitle">Staff-marked fitting notes that need action.</p>
+          </div>
+        </div>
+        <div class="list">
+          ${priorityNotes
+            .map(
+              ({ order, customer, record }) => `
+                <div class="item-card priority-note-card">
+                  <div class="row wrap">
+                    <div>
+                      <p class="name">${order.number} • ${customer.name}</p>
+                      <p class="meta">${record.priorityDue ? `Priority due ${formatDate(record.priorityDue)}` : "Priority due date not set"} • Order due ${formatDate(order.due)}</p>
+                    </div>
+                    <span class="overdue-badge">Priority</span>
+                  </div>
+                  <p class="meta">${escapeHtml(record.additionalNotes || record.notes || "No note entered.")}</p>
+                </div>
+              `,
+            )
+            .join("") || emptyState("No priority fitting notes.")}
         </div>
       </div>
       <div class="panel">
@@ -1648,6 +1674,22 @@ function renderDashboard() {
   `;
 }
 
+function dashboardPriorityNotes() {
+  return state.orders
+    .filter((order) => order.fittingRecord?.priority)
+    .map((order) => ({
+      order,
+      customer: getCustomer(order.customerId),
+      record: order.fittingRecord,
+    }))
+    .sort((a, b) => (a.record.priorityDue || a.order.due || "9999-12-31").localeCompare(b.record.priorityDue || b.order.due || "9999-12-31"));
+}
+
+function dashboardUpcomingWeekLabel() {
+  const dates = weekDates(DEMO_TODAY);
+  return `${formatDate(dates[0])} to ${formatDate(dates[6])}`;
+}
+
 function priorityMissingOrders() {
   return state.orders
     .filter(
@@ -1656,6 +1698,30 @@ function priorityMissingOrders() {
         (order.status === "Missing" || order.stockStatus === "Missing"),
     )
     .sort(sortByClosestDueDate);
+}
+
+function dashboardUpcomingOrders() {
+  const [weekStart, , , , , , weekEnd] = weekDates(DEMO_TODAY);
+  return state.orders
+    .filter((order) => {
+      if (["Collected", "Cancelled"].includes(order.status)) return false;
+      const dueThisWeek = order.due && order.due >= weekStart && order.due <= weekEnd;
+      const fittingThisWeek = order.fittingDate && order.fittingDate >= weekStart && order.fittingDate <= weekEnd;
+      return dueThisWeek || fittingThisWeek;
+    })
+    .sort(sortByDashboardUpcomingDate);
+}
+
+function dashboardUpcomingDate(order) {
+  const [weekStart, , , , , , weekEnd] = weekDates(DEMO_TODAY);
+  const dates = [order.due, order.fittingDate].filter((date) => date && date >= weekStart && date <= weekEnd);
+  return dates.sort()[0] || order.due || order.fittingDate || "9999-12-31";
+}
+
+function sortByDashboardUpcomingDate(a, b) {
+  const dateCompare = dashboardUpcomingDate(a).localeCompare(dashboardUpcomingDate(b));
+  if (dateCompare !== 0) return dateCompare;
+  return sortByClosestDueDate(a, b);
 }
 
 function upcomingOrdersDueSoon() {
@@ -2084,6 +2150,20 @@ function renderFittingForm(customer, order) {
         <label for="${order.id}-fitting-notes">Fitting notes</label>
         <textarea id="${order.id}-fitting-notes" name="notes" placeholder="Record what was done, what still needs adjusting, and next action.">${escapeHtml(record.notes || "")}</textarea>
       </div>
+      <div class="field full">
+        <label for="${order.id}-additional-notes">Additional notes</label>
+        <textarea id="${order.id}-additional-notes" name="additionalNotes" placeholder="Add any extra instruction, issue, or staff handover note.">${escapeHtml(record.additionalNotes || "")}</textarea>
+      </div>
+      <div class="priority-note-controls">
+        <label class="check-field priority-check" for="${order.id}-priority-note">
+          <input id="${order.id}-priority-note" name="priority" type="checkbox" data-fitting-priority="${order.id}" ${record.priority ? "checked" : ""} />
+          <span>Mark as priority</span>
+        </label>
+        <div class="field priority-due-field" data-fitting-priority-due="${order.id}" ${record.priority ? "" : "hidden"}>
+          <label for="${order.id}-priority-due">Priority due date</label>
+          <input id="${order.id}-priority-due" name="priorityDue" type="date" value="${record.priorityDue || ""}" ${record.priority ? "required" : "disabled"} />
+        </div>
+      </div>
       <div class="row wrap">
         <p class="meta">${record.updated ? `Last saved ${formatDate(record.updated)} by ${record.updatedBy || "Staff"}` : "No fitting notes saved yet."}</p>
         <button class="button gold" type="submit">${icon("check")} Save fitting</button>
@@ -2128,23 +2208,29 @@ function renderOrders() {
       <div class="panel-header">
         <div>
           <h3 class="panel-title">Live order board</h3>
-          <p class="panel-subtitle">Workflow checks the 3-month window, allocates stock, then moves through fitting, tailoring, and collection.</p>
+          <p class="panel-subtitle">Workflow checks the rolling Tuesday 3-month stock window, allocates stock, then moves through fitting, tailoring, and collection.</p>
         </div>
         <button class="button gold" data-action="new-order">${icon("plus")} Create order</button>
       </div>
       <div class="board">
         ${columns
           .map((status) => {
-            const orders = state.orders.filter((order) => order.status === status);
+            const config = orderStageConfig(status);
+            const orders = state.orders.filter((order) => order.status === status).sort((a, b) => sortOrdersForStage(a, b, status));
             return `
               <div class="board-column ${status === "Missing" ? "urgent-column" : ""}">
                 <h4 class="board-title">${status}<span>${orders.length}</span></h4>
+                ${config.description ? `<p class="stage-description">${config.description}</p>` : ""}
+                <label class="stage-search">
+                  <span class="visually-hidden">Search ${status} orders</span>
+                  <input type="search" data-stage-search="${escapeAttribute(status)}" placeholder="Search customers" autocomplete="off" />
+                </label>
                 <button class="stage-summary-card" data-action="open-order-stage" data-status="${escapeAttribute(status)}">
                   <span>${status}</span>
                   <strong>${orders.length}</strong>
-                  <small>${orders.length === 1 ? "order in this stage" : "orders in this stage"}</small>
+                  <small>${config.description || (orders.length === 1 ? "order in this stage" : "orders in this stage")}</small>
                 </button>
-                <div class="list">
+                <div class="list" data-stage-list="${escapeAttribute(status)}">
                   ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders")}
                 </div>
               </div>
@@ -2181,7 +2267,8 @@ function renderOrders() {
 
 function renderOrderStageModal() {
   const status = state.modal.status || "Orders";
-  const orders = state.orders.filter((order) => order.status === status).sort(sortByClosestDueDate);
+  const config = orderStageConfig(status);
+  const orders = state.orders.filter((order) => order.status === status).sort((a, b) => sortOrdersForStage(a, b, status));
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card dashboard-metric-modal" role="dialog" aria-modal="true" aria-labelledby="order-stage-title">
@@ -2189,11 +2276,15 @@ function renderOrderStageModal() {
           <div>
             <p class="page-kicker">Order stage</p>
             <h3 id="order-stage-title" class="modal-title">${status}</h3>
-            <p class="panel-subtitle">${orders.length} ${orders.length === 1 ? "order" : "orders"} sorted by earliest due date.</p>
+            <p class="panel-subtitle">${orders.length} ${orders.length === 1 ? "order" : "orders"} ${config.sortLabel || "sorted by earliest due date"}. ${config.description || ""}</p>
           </div>
           <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
         </div>
-        <div class="list">
+        <label class="stage-search">
+          <span class="visually-hidden">Search ${status} orders</span>
+          <input type="search" data-stage-search="${escapeAttribute(status)}" placeholder="Search customers" autocomplete="off" />
+        </label>
+        <div class="list" data-stage-list="${escapeAttribute(status)}">
           ${orders.map((order) => orderCard(order, true, { compactCollapsed: true, popupOnOpen: true })).join("") || emptyState("No orders in this stage.")}
         </div>
         <div class="modal-actions">
@@ -2202,6 +2293,82 @@ function renderOrderStageModal() {
       </section>
     </div>
   `;
+}
+
+function orderStageConfig(status) {
+  return {
+    Missing: {
+      description: "Missing orders inside the current Tuesday 3-month window",
+      overdueDate: "due",
+      overdueLabel: "Order overdue",
+      sortBy: "due",
+      sortLabel: "sorted by earliest due date",
+    },
+    Unprocessed: {
+      description: "Orders outside the current Tuesday 3-month window",
+      overdueDate: "due",
+      overdueLabel: "Order overdue",
+      sortBy: "due",
+      sortLabel: "sorted by earliest due date",
+    },
+    Ready: {
+      description: "Ready for fitting and in store",
+      overdueDate: "fittingDate",
+      overdueLabel: "Fitting overdue",
+      sortBy: "fittingDate",
+      sortLabel: "organised by fitting date",
+    },
+    Fitting: {
+      description: "Fittings completed in store",
+      overdueDate: "fittingDate",
+      overdueLabel: "Fitting overdue",
+      sortBy: "fittingDate",
+      sortLabel: "organised by fitting date",
+    },
+  }[status] || {
+    description: "",
+    overdueDate: "due",
+    overdueLabel: "Order overdue",
+    sortBy: "due",
+    sortLabel: "sorted by earliest due date",
+  };
+}
+
+function orderOverdueMeta(order) {
+  const config = orderStageConfig(order.status);
+  const dateValue = order[config.overdueDate] || "";
+  if (!dateValue || dateValue >= DEMO_TODAY) return null;
+  return {
+    label: config.overdueLabel || "Overdue",
+    date: dateValue,
+  };
+}
+
+function orderSearchText(order, customer = getCustomer(order.customerId)) {
+  return [
+    customer.name,
+    customer.phone,
+    customer.email,
+    order.number,
+    order.item,
+    order.status,
+    order.due,
+    order.fittingDate,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function sortOrdersForStage(a, b, status) {
+  const config = orderStageConfig(status);
+  const primary = config.sortBy || "due";
+  const aDate = a[primary] || a.due || "9999-12-31";
+  const bDate = b[primary] || b.due || "9999-12-31";
+  const aTime = Date.parse(`${aDate}T12:00:00`);
+  const bTime = Date.parse(`${bDate}T12:00:00`);
+  if (aTime !== bTime) return aTime - bTime;
+  return sortByClosestDueDate(a, b);
 }
 
 function renderWeeklyAlterationTotals() {
@@ -2507,6 +2674,9 @@ function inventoryGroup(group) {
                         </tbody>
                       </table>
                     </div>
+                    <div class="inventory-mobile-list">
+                      ${variations.map((item) => inventoryMobileCard(item)).join("")}
+                    </div>
                   </div>
                 `,
               )
@@ -2514,6 +2684,48 @@ function inventoryGroup(group) {
           : `<p class="empty-state">No ${group.toLowerCase()} added yet.</p>`
       }
     </section>
+  `;
+}
+
+function inventoryMobileCard(item) {
+  const available = inventoryAvailable(item);
+  return `
+    <details class="inventory-mobile-card">
+      <summary>
+        <span>
+          <strong>${inventoryParentName(item)}</strong>
+          <small>${inventoryVariationLabel(item)}${item.color ? ` • ${item.color}` : ""}</small>
+        </span>
+        <span class="inventory-available-count">
+          <strong>${available}</strong>
+          <small>available</small>
+        </span>
+      </summary>
+      <div class="inventory-mobile-details">
+        ${item.qty <= item.alert ? `<span class="status unpaid">Low stock</span>` : ""}
+        <div class="inventory-mobile-meta">
+          <span>Price <strong>${money(inventoryPrice(item))}</strong></span>
+          <span>Committed <strong>${item.committed}</strong></span>
+          <span>Qty <strong>${item.qty}</strong></span>
+          <span>Low alert <strong>${item.alert}</strong></span>
+        </div>
+        <div class="stock-stepper mobile-stock-stepper" aria-label="Update stock for ${item.item}">
+          <button class="icon-button" data-action="stock-minus" data-id="${item.id}" title="Decrease stock">${icon("minus")}</button>
+          <input class="stock-qty-input" data-stock-qty="${item.id}" type="number" min="0" step="1" value="${item.qty}" aria-label="Stock quantity for ${item.item}" />
+          <button class="icon-button" data-action="stock-plus" data-id="${item.id}" title="Increase stock">${icon("plus")}</button>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="${item.id}-mobile-price">Price</label>
+            <input id="${item.id}-mobile-price" class="stock-price-input" data-stock-price="${item.id}" type="number" min="0" step="1" value="${inventoryPrice(item)}" />
+          </div>
+          <div class="field">
+            <label for="${item.id}-mobile-alert">Low stock alert</label>
+            <input id="${item.id}-mobile-alert" class="stock-qty-input" data-stock-alert="${item.id}" type="number" min="0" step="1" value="${item.alert}" />
+          </div>
+        </div>
+      </div>
+    </details>
   `;
 }
 
@@ -2606,12 +2818,20 @@ function allocationWindowEnd() {
 }
 
 function stockAllocationDate() {
-  return todayKey();
+  return mostRecentTuesday(todayKey());
 }
 
 function isInStockAllocationWindow(order) {
   if (!order?.due) return false;
   return order.due <= allocationWindowEnd();
+}
+
+function mostRecentTuesday(dateString) {
+  const date = new Date(`${dateString}T12:00:00`);
+  const day = date.getDay();
+  const daysSinceTuesday = (day + 5) % 7;
+  date.setDate(date.getDate() - daysSinceTuesday);
+  return date.toISOString().slice(0, 10);
 }
 
 function allocateAllStock(options = {}) {
@@ -2660,7 +2880,10 @@ function allocateStockForItem(item, options = {}) {
       order.stockStatus = "Reserved";
       updateOrderInventoryLineStatus(order, item.id, "Reserved");
       order.stockAllocatedDate = stockAllocationDate();
-      if (["Missing", "Unprocessed"].includes(order.status)) order.status = "Ready";
+      if (["Missing", "Unprocessed"].includes(order.status)) {
+        order.status = "Ready";
+        order.readyLocation = order.readyLocation || "in-store";
+      }
       if (previousStatus !== order.status || previousStockStatus !== order.stockStatus) {
         changed = true;
         if (previousStockStatus !== "Reserved") newlyAllocated += 1;
@@ -2853,7 +3076,7 @@ function orderStockMeta(order) {
   const item = state.inventory.find((stock) => stock.id === order.inventoryItemId);
   if (!item) return order.stockStatus || "";
   const available = inventoryAvailable(item);
-  if (order.stockStatus === "Future allocation") return `${inventoryOrderLabel(item)} committed • outside current ${STOCK_ALLOCATION_MONTHS}-month allocation window`;
+  if (order.stockStatus === "Future allocation") return `${inventoryOrderLabel(item)} committed • outside Tuesday ${STOCK_ALLOCATION_MONTHS}-month allocation window`;
   if (order.status === "Missing" || order.stockStatus === "Missing") return `${inventoryOrderLabel(item)} missing`;
   return `${inventoryOrderLabel(item)} reserved • ${available} available now`;
 }
@@ -3256,18 +3479,25 @@ function orderCard(order, editable = false, options = {}) {
   const measurements = orderMeasurements(order);
   const depositReminder = depositReminderInfo(order);
   const stockMeta = orderStockMeta(order);
+  const overdue = orderOverdueMeta(order);
+  const readyState = readyLocationState(order);
+  const searchText = orderSearchText(order, customer);
   const inlineAction = options.action || "toggle-order";
   const cardAction = options.popupOnOpen ? "open-order-detail" : inlineAction;
   const cardLabel = options.popupOnOpen ? `Open ${order.number} details` : `Show ${order.number} details`;
   if (compactCollapsed) {
     return `
-      <article class="item-card clickable-card compact-order-card" data-action="${cardAction}" data-id="${order.id}" tabindex="0" role="button" aria-label="${cardLabel}">
+      <article class="item-card clickable-card compact-order-card ${overdue ? "order-overdue" : ""}" data-action="${cardAction}" data-id="${order.id}" data-order-search-text="${escapeAttribute(searchText)}" tabindex="0" role="button" aria-label="${cardLabel}">
         <div class="row wrap">
           <div>
             <p class="name">${customer.name}</p>
             <p class="meta">${order.number} • Due ${formatDate(order.due)}${stockMeta ? ` • ${stockMeta}` : ""}</p>
           </div>
-          <span class="status ${statusClass(order.status)}">${order.status}</span>
+          <div class="order-card-status">
+            ${overdue ? `<span class="overdue-badge">${overdue.label}</span>` : ""}
+            ${readyState ? `<span class="ready-location-badge ${readyState.className}">${readyState.label}</span>` : ""}
+            <span class="status ${statusClass(order.status)}">${order.status}</span>
+          </div>
         </div>
       </article>
     `;
@@ -3276,13 +3506,17 @@ function orderCard(order, editable = false, options = {}) {
     ? ""
     : `data-action="${expandable ? inlineAction : "open-customer"}" data-id="${expandable ? order.id : customer.id}" tabindex="0" role="button" aria-label="${expandable ? `Show ${order.number} details` : `Open ${customer.name} customer profile`}"`;
   return `
-    <article class="item-card ${forceExpanded ? "" : "clickable-card"} ${expanded ? "expanded-order" : ""}" ${cardAttributes}>
+    <article class="item-card ${forceExpanded ? "" : "clickable-card"} ${expanded ? "expanded-order" : ""} ${overdue ? "order-overdue" : ""}" data-order-search-text="${escapeAttribute(searchText)}" ${cardAttributes}>
       <div class="row wrap">
         <div>
           <p class="name">${order.number} • ${customer.name}</p>
           <p class="meta">${order.item}${expandable ? ` • Tap to ${expanded ? "collapse" : "expand"}` : ""}</p>
         </div>
-        <span class="status ${statusClass(order.status)}">${order.status}</span>
+        <div class="order-card-status">
+          ${overdue ? `<span class="overdue-badge">${overdue.label}</span>` : ""}
+          ${order.status === "Ready" && editable ? readyLocationSelect(order) : readyState ? `<span class="ready-location-badge ${readyState.className}">${readyState.label}</span>` : ""}
+          <span class="status ${statusClass(order.status)}">${order.status}</span>
+        </div>
       </div>
       <div class="row wrap">
         <p class="meta">Due ${formatDate(order.due)} • ${order.tailor}</p>
@@ -3578,6 +3812,35 @@ function statusSelect(order) {
   `;
 }
 
+function readyLocationSelect(order) {
+  return `
+    <select class="status-select ready-location-select" data-order-field="readyLocation" data-id="${order.id}" aria-label="Update ready location for ${order.number}" required>
+      ${readyLocationOptions().map((option) => `<option value="${option.value}" ${option.value === readyLocationValue(order) ? "selected" : ""}>${option.label}</option>`).join("")}
+    </select>
+  `;
+}
+
+function readyLocationOptions() {
+  return [
+    { value: "in-store", label: "In store" },
+    { value: "ready-for-fitting", label: "Ready for fitting rail" },
+  ];
+}
+
+function readyLocationValue(order) {
+  return order.readyLocation || "in-store";
+}
+
+function readyLocationState(order) {
+  if (order.status !== "Ready") return null;
+  const value = readyLocationValue(order);
+  const option = readyLocationOptions().find((item) => item.value === value) || readyLocationOptions()[0];
+  return {
+    label: option.label,
+    className: value,
+  };
+}
+
 function statCard(label, value, note, view = "", action = "", id = "") {
   const attributes = view
     ? `data-view="${view}" tabindex="0" role="button" aria-label="Open ${label}"`
@@ -3662,7 +3925,7 @@ function paymentMethodTotals(payments) {
 }
 
 function renderCalendar(dateString, mode) {
-  if (mode === "month") return renderScheduleCalendar(monthDatesInView(dateString), "month");
+  if (mode === "month") return renderMonthCalendar(dateString);
   if (mode === "week") return renderScheduleCalendar(weekDates(dateString), "week");
   if (mode === "day") return "";
   const days = mode === "week" ? weekDates(dateString) : [dateString];
@@ -3693,7 +3956,7 @@ function renderCalendar(dateString, mode) {
 function renderScheduleCalendar(days, mode) {
   const times = calendarTimeSlots(days);
   return `
-    <div class="schedule-calendar ${mode === "month" ? "month-schedule" : ""}" style="--day-count: ${days.length};">
+    <div class="schedule-calendar ${mode === "month" ? "month-schedule" : "week-schedule"}" style="--day-count: ${days.length};">
       <div class="schedule-corner">Time</div>
       ${days
         .map(
@@ -3938,6 +4201,10 @@ function bindEvents() {
     });
   }
 
+  document.querySelectorAll("[data-stage-search]").forEach((input) => {
+    input.addEventListener("input", () => filterOrderStage(input));
+  });
+
   const orderCustomerSelect = document.querySelector("[data-input='order-customer']");
   if (orderCustomerSelect) {
     orderCustomerSelect.addEventListener("change", () => fillOrderCustomerFields(orderCustomerSelect.value));
@@ -3967,6 +4234,11 @@ function bindEvents() {
     field.addEventListener("input", () => updateBookingAvailability(field.closest("form")));
   });
   document.querySelectorAll("form").forEach((form) => updateBookingAvailability(form));
+
+  document.querySelectorAll("[data-fitting-priority]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => syncFittingPriorityField(checkbox));
+    syncFittingPriorityField(checkbox);
+  });
 
   document.querySelectorAll("[data-action]").forEach((button) => {
     button.addEventListener("click", (event) => {
@@ -4012,6 +4284,16 @@ function bindEvents() {
       form.addEventListener("submit", handleBookingSubmit);
     }
   });
+}
+
+function syncFittingPriorityField(checkbox) {
+  const form = checkbox.closest("form");
+  const field = form?.querySelector(`[data-fitting-priority-due="${checkbox.dataset.fittingPriority}"]`);
+  const input = field?.querySelector("input");
+  if (!field || !input) return;
+  field.hidden = !checkbox.checked;
+  input.disabled = !checkbox.checked;
+  input.required = checkbox.checked;
 }
 
 function handleAction(button) {
@@ -4326,6 +4608,31 @@ function updateOrderInvoiceSummary() {
   amountDue.textContent = money(Math.max(total - paid, 0));
 }
 
+function filterOrderStage(input) {
+  const status = input?.dataset?.stageSearch || "";
+  const list =
+    input?.closest(".board-column, .modal-card")?.querySelector(`[data-stage-list="${CSS.escape(status)}"]`) ||
+    document.querySelector(`[data-stage-list="${CSS.escape(status)}"]`);
+  if (!list) return;
+  const terms = String(input?.value || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let visibleCount = 0;
+  list.querySelectorAll("[data-order-search-text]").forEach((card) => {
+    const haystack = card.dataset.orderSearchText || "";
+    const visible = !terms.length || terms.every((term) => haystack.includes(term));
+    card.hidden = !visible;
+    if (visible) visibleCount += 1;
+  });
+  let empty = list.querySelector("[data-stage-search-empty]");
+  if (!empty) {
+    empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.dataset.stageSearchEmpty = "true";
+    empty.textContent = "No matching orders";
+    list.appendChild(empty);
+  }
+  empty.hidden = visibleCount !== 0 || !terms.length;
+}
+
 function toggleCustomOrderField(values) {
   const field = document.querySelector("[data-custom-order-field]");
   const input = document.querySelector("#order-custom-item");
@@ -4498,7 +4805,7 @@ function handleOrderSubmit(event) {
     ? order.stockStatus === "Reserved"
       ? " Stock has been allocated by due-date priority."
       : order.stockStatus === "Future allocation"
-        ? ` Stock is committed and will be allocated when the due date enters the next ${STOCK_ALLOCATION_MONTHS} months.`
+        ? ` Stock is committed and will be allocated when the due date enters the Tuesday ${STOCK_ALLOCATION_MONTHS}-month planning window.`
         : " Item is out of stock, so the order is in Missing."
     : " Custom order is Unprocessed.";
   const allocationMessage = allocationResult.newlyAllocated > 1 ? ` ${allocationResult.newlyAllocated} priority orders now have stock reserved.` : "";
@@ -4644,11 +4951,21 @@ function handleFittingRecordSubmit(event) {
   const order = state.orders.find((item) => item.id === form.dataset.fittingForm);
   if (!order) return;
   const data = new FormData(form);
+  const priority = data.get("priority") === "on";
+  const priorityDue = priority ? String(data.get("priorityDue") || "") : "";
   const record = {
     notes: String(data.get("notes") || "").trim(),
+    additionalNotes: String(data.get("additionalNotes") || "").trim(),
+    priority,
+    priorityDue,
     updated: todayKey(),
     updatedBy: currentStaffName(),
   };
+  if (priority && !priorityDue) {
+    state.toast = "Add a due date for the priority note before saving.";
+    render();
+    return;
+  }
   fittingChecklistSections()
     .flatMap((section) => section.items)
     .forEach((item) => {
@@ -4758,6 +5075,7 @@ function updateOrderStatus(orderId, status) {
   if (!order) return;
   const previousStatus = order.status;
   order.status = normaliseOrderStatus(status);
+  if (order.status === "Ready") order.readyLocation = order.readyLocation || "in-store";
   order.updated = "2026-05-01";
   order.tailor = order.status === "At Tailor" ? "Aziz Tailoring" : order.status === "Ready for collection" ? "Returned" : order.tailor;
   order.history.push(`${order.status} 1 May by ${currentStaffName()}`);
