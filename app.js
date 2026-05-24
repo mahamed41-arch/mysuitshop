@@ -25,13 +25,19 @@ const seedState = {
   financeUnlocked: false,
   staffMembers: ["Sam", "Ayaan", "Leah", "Maya"],
   staffUsers: [
-    { id: "u1", name: "Sam", role: "Senior staff", financeAccess: true, status: "Active" },
-    { id: "u2", name: "Ayaan", role: "Staff", financeAccess: false, status: "Active" },
-    { id: "u3", name: "Leah", role: "Staff", financeAccess: false, status: "Active" },
-    { id: "u4", name: "Maya", role: "Staff", financeAccess: false, status: "Active" },
+    { id: "u1", name: "Sam", username: "sam", password: "staff123", role: "Senior staff", financeAccess: true, status: "Active" },
+    { id: "u2", name: "Ayaan", username: "ayaan", password: "staff123", role: "Staff", financeAccess: false, status: "Active" },
+    { id: "u3", name: "Leah", username: "leah", password: "staff123", role: "Staff", financeAccess: false, status: "Active" },
+    { id: "u4", name: "Maya", username: "maya", password: "staff123", role: "Staff", financeAccess: false, status: "Active" },
   ],
   settings: {
     theme: "Apple clean",
+    brandName: "Tux Studio OS",
+    brandSubtitle: "CRM, bookings, orders, stock",
+    logoText: "TS",
+    logoImageUrl: "",
+    primaryColour: "#24466f",
+    accentColour: "#8a650f",
     bookingWindowDays: 14,
     stockAllocationDay: "Tuesday",
     stockAllocationMonths: 3,
@@ -448,6 +454,8 @@ const seedState = {
 
 let state = normaliseInventoryState(loadState());
 let renderRecoveryAttempted = false;
+let toastTimer = null;
+let clockTimer = null;
 allocateAllStock({ addHistory: false });
 
 const navItems = [
@@ -486,10 +494,16 @@ function normaliseInventoryState(sourceState) {
   const nextState = { ...sourceState };
   nextState.settings = { ...cloneData(seedState.settings), ...(sourceState.settings || {}) };
   nextState.staffUsers = Array.isArray(sourceState.staffUsers)
-    ? sourceState.staffUsers
+    ? sourceState.staffUsers.map((user) => ({
+        ...user,
+        username: user.username || usernameFromName(user.name),
+        password: user.password || "staff123",
+      }))
     : staffMembersFromSource(sourceState).map((name, index) => ({
         id: `u${index + 1}`,
         name,
+        username: usernameFromName(name),
+        password: "staff123",
         role: index === 0 ? "Senior staff" : "Staff",
         financeAccess: index === 0,
         status: "Active",
@@ -588,16 +602,55 @@ function staffMembers() {
   return [...new Set([...fromUsers, ...fromState, ...fromAppointments, "Sam", "Ayaan"])].filter((name) => name !== "Unassigned");
 }
 
+function usernameFromName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".");
+}
+
 function currentStaffName() {
-  return seniorStaffName() || "Unassigned";
+  return signedInStaffName() || "Unassigned";
 }
 
 function activeStaffName() {
-  return seniorStaffName();
+  return signedInStaffName();
 }
 
 function seniorStaffName() {
-  return dailyStaffClock().senior.name || state.activeStaff || "";
+  return dailyStaffClock().senior.name || "";
+}
+
+function signedInStaffName() {
+  const clock = dailyStaffClock();
+  return clock.senior.name || clock.staff.name || state.activeStaff || "";
+}
+
+function currentStaffUser() {
+  const signedIn = signedInStaffName();
+  return (state.staffUsers || []).find((user) => user.name === signedIn) || null;
+}
+
+function isAdminUser() {
+  const user = currentStaffUser();
+  if (!user) return true;
+  return ["Senior staff", "Owner"].includes(user.role) || user.financeAccess;
+}
+
+function allowedNavItems() {
+  if (isAdminUser()) return navItems;
+  return navItems.filter((item) => ["dashboard", "bookings", "customers", "settings"].includes(item.id));
+}
+
+function canAccessView(view) {
+  if (view === "bookingPortal") return isAdminUser();
+  return allowedNavItems().some((item) => item.id === view);
+}
+
+function ensureAllowedView() {
+  if (!canAccessView(state.currentView)) {
+    state.currentView = "dashboard";
+  }
 }
 
 function dailyStaffClock() {
@@ -622,7 +675,7 @@ function render() {
       app.innerHTML = renderBookingPortal();
     } else {
       app.innerHTML = `
-        <div class="app-shell">
+        <div class="app-shell" style="${brandStyleVars()}">
           ${renderSidebar()}
           <main class="main">
           ${renderTopbar()}
@@ -638,6 +691,8 @@ function render() {
     try {
       bindEvents();
       centerActiveOrderStageTab();
+      scheduleToastClear();
+      startStickyClock();
     } catch (bindError) {
       console.error("Tux Studio OS interaction setup error", bindError);
     }
@@ -671,25 +726,136 @@ function centerActiveOrderStageTab() {
   });
 }
 
+function scheduleToastClear() {
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  if (!state.toast) return;
+  toastTimer = setTimeout(() => {
+    state.toast = "";
+    const toast = document.querySelector(".toast");
+    if (toast) toast.remove();
+  }, 3500);
+}
+
+function liveDateLabel(date = new Date()) {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function liveTimeLabel(date = new Date()) {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function updateStickyClock() {
+  const now = new Date();
+  document.querySelectorAll("[data-live-date]").forEach((element) => {
+    element.textContent = liveDateLabel(now);
+  });
+  document.querySelectorAll("[data-live-time]").forEach((element) => {
+    element.textContent = liveTimeLabel(now);
+  });
+  updateNowMarkers(now);
+  updatePastAppointmentCards(now);
+}
+
+function startStickyClock() {
+  updateStickyClock();
+  if (clockTimer) return;
+  clockTimer = setInterval(updateStickyClock, 30000);
+}
+
+function minutesFromTime(value) {
+  const [hours, minutes] = String(value || "").split(":").map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function currentMinutes(date = new Date()) {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function isAppointmentPast(appt, date = new Date()) {
+  const apptMinutes = minutesFromTime(appt?.time);
+  if (apptMinutes === null) return false;
+  if (appt.date && appt.date < DEMO_TODAY) return true;
+  return appt.date === DEMO_TODAY && apptMinutes < currentMinutes(date);
+}
+
+function updatePastAppointmentCards(date = new Date()) {
+  document.querySelectorAll("[data-appointment-time][data-appointment-date]").forEach((card) => {
+    const apptMinutes = minutesFromTime(card.dataset.appointmentTime);
+    const past = card.dataset.appointmentDate === DEMO_TODAY && apptMinutes !== null && apptMinutes < currentMinutes(date);
+    card.classList.toggle("appointment-past", past);
+  });
+}
+
+function updateNowMarkers(date = new Date()) {
+  const now = currentMinutes(date);
+  document.querySelectorAll("[data-now-marker]").forEach((marker) => {
+    const slot = marker.closest("[data-slot-time][data-slot-date]");
+    const slotStart = minutesFromTime(slot?.dataset.slotTime);
+    const markerDate = slot?.closest("[data-now-marker-date]")?.dataset.nowMarkerDate;
+    const visible = slot && slot.dataset.slotDate === markerDate && slotStart !== null && now >= slotStart && now < slotStart + 60;
+    marker.hidden = !visible;
+    if (visible) {
+      marker.style.top = `${Math.min(96, Math.max(4, ((now - slotStart) / 60) * 100))}%`;
+    }
+  });
+}
+
+function brandSettings() {
+  const settings = state.settings || seedState.settings;
+  return {
+    name: settings.brandName || "Tux Studio OS",
+    subtitle: settings.brandSubtitle || "CRM, bookings, orders, stock",
+    logoText: settings.logoText || "TS",
+    logoImageUrl: settings.logoImageUrl || "",
+    primaryColour: validHexColour(settings.primaryColour, "#24466f"),
+    accentColour: validHexColour(settings.accentColour, "#8a650f"),
+  };
+}
+
+function validHexColour(value, fallback) {
+  const colour = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(colour) ? colour : fallback;
+}
+
+function brandStyleVars() {
+  const brand = brandSettings();
+  return `--mui-primary: ${brand.primaryColour}; --mui-primary-dark: ${brand.primaryColour}; --md-primary: ${brand.primaryColour}; --mui-secondary: ${brand.accentColour}; --md-accent: ${brand.accentColour};`;
+}
+
 function renderSidebar() {
+  ensureAllowedView();
+  const brand = brandSettings();
+  const visibleNavItems = allowedNavItems();
   const openOrders = state.orders.filter((order) => !["Collected", "Cancelled"].includes(order.status)).length;
   const moreItems = [
-    ...navItems.filter((item) => !["dashboard", "bookings"].includes(item.id)),
-    { id: "bookingPortal", label: "Booking page", icon: "external" },
+    ...visibleNavItems.filter((item) => !["dashboard", "bookings"].includes(item.id)),
+    ...(isAdminUser() ? [{ id: "bookingPortal", label: "Booking page", icon: "external" }] : []),
   ];
   const moreActive = moreItems.some((item) => item.id === state.currentView);
   return `
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">${tuxMark()}</div>
+        <div class="brand-mark">${brandMark()}</div>
         <div>
-          <h1 class="brand-title">Tux Studio OS</h1>
-          <p class="brand-subtitle">CRM, bookings, orders, stock</p>
+          <h1 class="brand-title">${escapeHtml(brand.name)}</h1>
+          <p class="brand-subtitle">${escapeHtml(brand.subtitle)}</p>
         </div>
       </div>
       <div class="nav-section staff-nav">
         <span class="nav-label">Staff workspace</span>
-        ${navItems
+        ${visibleNavItems
           .map(
             (item) => `
               <button class="nav-button ${state.currentView === item.id ? "active" : ""} ${["dashboard", "bookings"].includes(item.id) ? "primary-mobile-nav" : "more-mobile-nav"}" data-view="${item.id}" title="${item.label}">
@@ -721,13 +887,13 @@ function renderSidebar() {
           </div>
         </details>
       </div>
-      <div class="nav-section customer-nav">
+      ${isAdminUser() ? `<div class="nav-section customer-nav">
         <span class="nav-label">Customer access</span>
         <button class="nav-button more-mobile-nav ${state.currentView === "bookingPortal" ? "active" : ""}" data-view="bookingPortal" title="Public booking page">
           <span class="icon">${icon("external")}</span>
           <span>Booking page</span>
         </button>
-      </div>
+      </div>` : ""}
       <div class="sidebar-note">
         <strong>Prototype mode</strong>
         <span>Use the sample data freely. Changes are saved in this browser and can be reset any time.</span>
@@ -737,10 +903,12 @@ function renderSidebar() {
 }
 
 function renderMobileTabbar() {
+  ensureAllowedView();
+  const visibleNavItems = allowedNavItems();
   const openOrders = state.orders.filter((order) => !["Collected", "Cancelled"].includes(order.status)).length;
   const moreItems = [
-    ...navItems.filter((item) => !["dashboard", "bookings"].includes(item.id)),
-    { id: "bookingPortal", label: "Booking page", icon: "external" },
+    ...visibleNavItems.filter((item) => !["dashboard", "bookings"].includes(item.id)),
+    ...(isAdminUser() ? [{ id: "bookingPortal", label: "Booking page", icon: "external" }] : []),
   ];
   const moreActive = moreItems.some((item) => item.id === state.currentView);
   return `
@@ -778,6 +946,7 @@ function renderMobileTabbar() {
 }
 
 function renderTopbar() {
+  ensureAllowedView();
   const titles = {
     dashboard: ["Today at the shop", "A quick glance at today's bookings and the few things that need staff attention."],
     bookings: ["Bookings", "Manage staff appointments and view the customer self-booking flow."],
@@ -797,10 +966,15 @@ function renderTopbar() {
         <h2 class="page-title">${title}</h2>
         <p class="page-copy">${copy}</p>
       </div>
+      <div class="sticky-datetime" aria-live="polite">
+        <span data-live-date>${liveDateLabel()}</span>
+        <strong data-live-time>${liveTimeLabel()}</strong>
+      </div>
       <div class="top-actions">
-        <button class="ghost-button" data-action="reset">${icon("refresh")} Reset demo</button>
+        ${isAdminUser() ? `<button class="ghost-button" data-action="reset">${icon("refresh")} Reset demo</button>` : ""}
         <button class="ghost-button top-booking-button" data-action="new-staff-booking">${icon("calendar")} New booking</button>
         <button class="button gold" data-action="new-order">${icon("plus")} New order</button>
+        <button class="ghost-button" data-action="sign-out">${icon("external")} Sign out</button>
       </div>
     </header>
   `;
@@ -845,26 +1019,31 @@ function renderStaffClockIn() {
 }
 
 function renderStaffLoginModal() {
-  if (state.currentView === "bookingPortal" || seniorStaffName()) return "";
+  if (state.currentView === "bookingPortal" || signedInStaffName()) return "";
+  const brand = brandSettings();
   return `
     <div class="modal-backdrop staff-login-backdrop" role="presentation">
       <section class="modal-card staff-login-card" role="dialog" aria-modal="true" aria-labelledby="staff-login-title">
-        <div class="modal-header">
+        <div class="login-brand-header">
+          <div class="brand-mark">${brandMark()}</div>
           <div>
-            <p class="page-kicker">Staff check-in</p>
-            <h3 id="staff-login-title" class="modal-title">Who's opening Tux Studio OS?</h3>
-            <p class="panel-subtitle">Choose your name once. The app records your clock-in for today.</p>
+            <p class="page-kicker">Staff sign in</p>
+            <h3 id="staff-login-title" class="modal-title">${escapeHtml(brand.name)}</h3>
+            <p class="panel-subtitle">Enter your staff username and password to start your shift.</p>
           </div>
         </div>
         <form id="staff-login-form" class="form-grid">
           <div class="field full">
-            <label for="staff-login-name">Staff member</label>
-            <select id="staff-login-name" name="staffName" required>
-              ${staffSelectOptions()}
-            </select>
+            <label for="staff-login-username">Username</label>
+            <input id="staff-login-username" name="username" autocomplete="username" required placeholder="sam" />
           </div>
+          <div class="field full">
+            <label for="staff-login-password">Password</label>
+            <input id="staff-login-password" name="password" type="password" autocomplete="current-password" required placeholder="Password" />
+          </div>
+          <p class="meta login-demo-hint">Demo login: <strong>sam</strong> / <strong>staff123</strong></p>
           <div class="form-actions">
-            <button class="button gold" type="submit">${icon("check")} Start shift</button>
+            <button class="button gold" type="submit">${icon("check")} Sign in</button>
           </div>
         </form>
       </section>
@@ -933,6 +1112,7 @@ function renderNewOrderModal() {
         </div>
         <form id="new-order-form" class="invoice-composer">
           <div class="invoice-scroll-body">
+            <div class="inline-form-message" data-order-form-message hidden></div>
             <section class="invoice-section" data-quote-step="quote">
             <div class="invoice-section-head">
               <h4>Step 1: Customer and measurements</h4>
@@ -1036,7 +1216,7 @@ function renderNewOrderModal() {
               <div class="quote-doc-paper">
                 <div class="quote-doc-head">
                   <span>QUOTE PREVIEW</span>
-                  <strong>Tux Studio OS</strong>
+                  <strong>${escapeHtml(brandSettings().name)}</strong>
                 </div>
                 <div class="quote-doc-customer">
                   <p><span>Customer</span><strong data-quote-customer>${escapeHtml(selectedCustomer?.name || "New customer")}</strong></p>
@@ -1223,6 +1403,8 @@ function renderCustomerModal() {
             <p class="stat-value small-date">${formatDate(customer.lastVisit)}</p>
           </div>
         </div>
+        ${renderCustomerTimeline(customer, { orders, invoices, quotations })}
+        ${renderCustomerPaymentSummary(orders, invoices)}
         ${renderCustomerCommunicationHistory(customer, orders)}
         <section class="modal-grid">
           <div>
@@ -1284,6 +1466,115 @@ function renderCustomerCommunicationHistory(customer, orders) {
   `;
 }
 
+function renderCustomerTimeline(customer, { orders = [], invoices = [], quotations = [] } = {}) {
+  const appointmentItems = state.appointments
+    .filter((appt) => appt.customerId === customer.id)
+    .map((appt) => ({
+      date: appt.date,
+      title: `${appt.type} appointment`,
+      detail: `${appt.time} with ${appt.staff} • ${appt.status}`,
+      badge: "Appointment",
+    }));
+  const quoteItems = quotations.map((quote) => ({
+    date: quote.updated || quote.createdDate,
+    title: `${quote.number} ${quote.status || "Quoted"}`,
+    detail: `${quote.lines?.map((line) => line.label).join(", ") || "Quotation"} • ${money(quote.total || 0)}`,
+    badge: "Quote",
+  }));
+  const invoiceItems = invoices.map((invoice) => ({
+    date: invoice.dueDate,
+    title: `${invoice.number} ${invoiceStatus(invoice).label}`,
+    detail: `${money(invoice.total)} total • ${money(Math.max(invoice.total - invoice.paid, 0))} due`,
+    badge: "Invoice",
+  }));
+  const orderItems = orders.map((order) => ({
+    date: order.updated || order.due,
+    title: `${order.number} ${order.status}`,
+    detail: `${order.item} • Due ${formatDate(order.due)}`,
+    badge: "Order",
+  }));
+  const items = [...appointmentItems, ...quoteItems, ...invoiceItems, ...orderItems]
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, 8);
+  return `
+    <section class="customer-timeline">
+      <div class="row wrap modal-section-head">
+        <div>
+          <h4 class="panel-title">Customer timeline</h4>
+          <p class="panel-subtitle">Appointments, quotes, invoices, and orders in one running history.</p>
+        </div>
+      </div>
+      <div class="timeline-list">
+        ${
+          items
+            .map(
+              (item) => `
+                <article class="timeline-item">
+                  <span class="status partial">${item.badge}</span>
+                  <div>
+                    <p class="name">${escapeHtml(item.title)}</p>
+                    <p class="meta">${escapeHtml(item.detail)}</p>
+                    <p class="meta">${formatDate(item.date)}</p>
+                  </div>
+                </article>
+              `,
+            )
+            .join("") || emptyState("No timeline activity yet.")
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderCustomerPaymentSummary(orders = [], invoices = []) {
+  const total = invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+  const paid = invoices.reduce((sum, invoice) => sum + Number(invoice.paid || 0), 0);
+  const due = Math.max(total - paid, 0);
+  const fittingPayments = orders
+    .map((order) => ({
+      order,
+      target: Math.ceil(Number(order.total || 0) * (Number(appSetting("fittingPaymentTarget", 50)) / 100)),
+    }))
+    .filter(({ order, target }) => target > Number(order.paid || 0));
+  return `
+    <section class="payment-summary-panel">
+      <div class="three-column">
+        <div class="item-card">
+          <p class="meta">Total quoted/invoiced</p>
+          <p class="stat-value">${money(total)}</p>
+        </div>
+        <div class="item-card">
+          <p class="meta">Paid</p>
+          <p class="stat-value">${money(paid)}</p>
+        </div>
+        <div class="item-card">
+          <p class="meta">Balance due</p>
+          <p class="stat-value">${money(due)}</p>
+        </div>
+      </div>
+      ${
+        fittingPayments.length
+          ? `<div class="list compact-list" style="margin-top: 10px;">
+              ${fittingPayments
+                .map(({ order, target }) => `
+                  <article class="item-card">
+                    <div class="row wrap">
+                      <div>
+                        <p class="name">${order.number} needs deposit before fitting</p>
+                        <p class="meta">${money(Math.max(target - Number(order.paid || 0), 0))} needed to reach ${appSetting("fittingPaymentTarget", 50)}%</p>
+                      </div>
+                      <span class="status partial">Payment due</span>
+                    </div>
+                  </article>
+                `)
+                .join("")}
+            </div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
 function customerCommunicationEvents(customerId, orders = []) {
   const appointmentEvents = state.appointments
     .filter((appt) => appt.customerId === customerId)
@@ -1339,7 +1630,19 @@ function customerCommunicationEvents(customerId, orders = []) {
       staff: order.createdBy || order.saleBy || "",
     }));
 
-  return [...appointmentEvents, ...followUpEvents, ...depositEvents].sort((a, b) => {
+  const customEvents = (state.customComms || [])
+    .filter((event) => event.customerId === customerId)
+    .map((event) => ({
+      date: event.date,
+      title: event.title || (event.direction === "Inbound" ? "Customer message" : "Custom message"),
+      detail: event.message,
+      channel: event.channel,
+      status: event.status || "Sent",
+      className: String(event.status || "Sent").toLowerCase().includes("log") ? "pending" : "sent",
+      staff: event.staff,
+    }));
+
+  return [...appointmentEvents, ...followUpEvents, ...depositEvents, ...customEvents].sort((a, b) => {
     const dateSort = String(b.date || "").localeCompare(String(a.date || ""));
     if (dateSort !== 0) return dateSort;
     return String(b.title || "").localeCompare(String(a.title || ""));
@@ -1356,22 +1659,7 @@ function allCommunicationEvents() {
       direction: "Outbound",
     }));
   });
-  const customEvents = (state.customComms || []).map((event) => {
-    const customer = getCustomer(event.customerId);
-    return {
-      date: event.date,
-      title: event.direction === "Inbound" ? "Customer message" : "Custom message",
-      detail: event.message,
-      channel: event.channel,
-      status: "Sent",
-      className: "sent",
-      staff: event.staff,
-      customerId: customer.id,
-      customerName: customer.name,
-      direction: event.direction,
-    };
-  });
-  return [...customEvents, ...automatedEvents].sort((a, b) => {
+  return automatedEvents.sort((a, b) => {
     const dateSort = String(b.date || "").localeCompare(String(a.date || ""));
     if (dateSort !== 0) return dateSort;
     return String(b.title || "").localeCompare(String(a.title || ""));
@@ -1870,6 +2158,9 @@ function renderAppointmentDetailModal() {
   const reminderDelivery = deliveryState(comms.reminderStatus);
   const typeTag = appointmentTypeTag(appt.type);
   const isSalesAppointment = /consultation|measurements/i.test(appt.type);
+  const customerQuotes = customerQuotations(customer.id);
+  const latestQuote = customerQuotes[0];
+  const customerOrders = state.orders.filter((order) => order.customerId === customer.id);
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card appointment-detail-modal" role="dialog" aria-modal="true" aria-labelledby="appointment-detail-title">
@@ -1915,10 +2206,20 @@ function renderAppointmentDetailModal() {
         ${
           isSalesAppointment
             ? `<div class="appointment-next-step">
-                <p class="meta">If the client attends and wants to proceed: measure them, prepare the quote, create the invoice, then take the deposit.</p>
+                <div class="appointment-workflow-strip">
+                  <span class="status ${appt.status === "Attended" ? "ready" : "partial"}">Attend</span>
+                  <span class="status ${latestQuote ? "ready" : "partial"}">Measure + quote</span>
+                  <span class="status ${customerOrders.length ? "ready" : "partial"}">Invoice + deposit</span>
+                </div>
+                <p class="meta">Use this appointment to decide the outcome: save a quote if they are considering it, create the invoice if they buy, or schedule follow-up if they do not buy today.</p>
                 <div class="appointment-actions">
                   <button class="ghost-button" data-action="no-sale-follow-up" data-id="${appt.id}">${icon("external")} No-sale follow-up</button>
-                  <button class="button gold" data-action="sale-from-appointment" data-id="${appt.customerId}" data-appointment="${appt.id}">${icon("invoice")} Create quote/invoice</button>
+                  ${
+                    latestQuote && latestQuote.status !== "Invoiced"
+                      ? `<button class="ghost-button" data-action="convert-quote" data-id="${latestQuote.id}">${icon("invoice")} Convert saved quote</button>`
+                      : ""
+                  }
+                  <button class="button gold" data-action="sale-from-appointment" data-id="${appt.customerId}" data-appointment="${appt.id}">${icon("invoice")} Measure / quote</button>
                 </div>
               </div>`
             : ""
@@ -1971,8 +2272,9 @@ function dashboardAppointmentCard(appt) {
   const statusMeta = appointmentStatusMeta(appt.status);
   const comms = appointmentComms(appt);
   const customer = getCustomer(appt.customerId);
+  const past = isAppointmentPast(appt);
   return `
-    <button class="dashboard-appointment-card appointment-type-card-${typeTag.className}" type="button" data-action="open-appointment-detail" data-id="${appt.id}">
+    <button class="dashboard-appointment-card appointment-type-card-${typeTag.className} ${past ? "appointment-past" : ""}" type="button" data-action="open-appointment-detail" data-id="${appt.id}" data-appointment-date="${appt.date}" data-appointment-time="${appt.time}">
       <span class="appointment-time">${appt.time}</span>
       <span class="appointment-main">
         <strong>${appt.name}</strong>
@@ -2340,6 +2642,10 @@ function renderCustomers() {
             <p class="name">${selected.address}</p>
           </div>
         </div>
+        <div class="divider"></div>
+        ${renderCustomerTimeline(selected, { orders, invoices, quotations })}
+        <div class="divider"></div>
+        ${renderCustomerPaymentSummary(orders, invoices)}
         <div class="divider"></div>
         <h3 class="panel-title">Measurements</h3>
         <div class="measurement-grid" style="margin-top: 12px;">
@@ -3538,6 +3844,7 @@ function staffRotaRows(clock, todaysAppointments) {
 }
 
 function renderSettings() {
+  if (!isAdminUser()) return renderStaffSettings();
   const settings = state.settings || seedState.settings;
   const users = state.staffUsers || [];
   const seniorCount = users.filter((user) => user.role === "Senior staff").length;
@@ -3564,7 +3871,7 @@ function renderSettings() {
                 <article class="settings-user-row">
                   <div>
                     <p class="name">${user.name}</p>
-                    <p class="meta">${user.role} • ${user.status || "Active"}</p>
+                    <p class="meta">${user.role} • ${user.status || "Active"} • ${user.username || usernameFromName(user.name)}</p>
                   </div>
                   <div class="row compact-actions">
                     ${user.financeAccess ? `<span class="status paid">Finance</span>` : `<span class="status pending">No finance</span>`}
@@ -3578,6 +3885,14 @@ function renderSettings() {
           <div class="field">
             <label for="settings-user-name">New staff name</label>
             <input id="settings-user-name" name="name" required placeholder="Staff name" />
+          </div>
+          <div class="field">
+            <label for="settings-user-username">Username</label>
+            <input id="settings-user-username" name="username" placeholder="first.name" />
+          </div>
+          <div class="field">
+            <label for="settings-user-password">Temporary password</label>
+            <input id="settings-user-password" name="password" type="password" placeholder="staff123" />
           </div>
           <div class="field">
             <label for="settings-user-role">Role</label>
@@ -3616,8 +3931,42 @@ function renderSettings() {
               </label>
             `,
           ).join("")}
+          <div class="form-grid branding-fields">
+            <div class="field">
+              <label for="settings-brand-name">Brand name</label>
+              <input id="settings-brand-name" name="brandName" value="${escapeAttribute(settings.brandName || "Tux Studio OS")}" placeholder="Shop or app name" />
+            </div>
+            <div class="field">
+              <label for="settings-brand-subtitle">Short description</label>
+              <input id="settings-brand-subtitle" name="brandSubtitle" value="${escapeAttribute(settings.brandSubtitle || "CRM, bookings, orders, stock")}" placeholder="What appears under the logo" />
+            </div>
+            <div class="field">
+              <label for="settings-logo-text">Logo text / monogram</label>
+              <input id="settings-logo-text" name="logoText" maxlength="4" value="${escapeAttribute(settings.logoText || "TS")}" placeholder="TS" />
+            </div>
+            <div class="field">
+              <label for="settings-logo-url">Logo image URL</label>
+              <input id="settings-logo-url" name="logoImageUrl" value="${escapeAttribute(settings.logoImageUrl || "")}" placeholder="Optional image URL" />
+            </div>
+            <div class="field colour-field">
+              <label for="settings-primary-colour">Primary colour</label>
+              <input id="settings-primary-colour" name="primaryColour" type="color" value="${validHexColour(settings.primaryColour, "#24466f")}" />
+            </div>
+            <div class="field colour-field">
+              <label for="settings-accent-colour">Accent colour</label>
+              <input id="settings-accent-colour" name="accentColour" type="color" value="${validHexColour(settings.accentColour, "#8a650f")}" />
+            </div>
+          </div>
+          <div class="brand-preview-card">
+            <div class="brand-mark">${brandMark()}</div>
+            <div>
+              <strong>${escapeHtml(settings.brandName || "Tux Studio OS")}</strong>
+              <small>${escapeHtml(settings.brandSubtitle || "CRM, bookings, orders, stock")}</small>
+            </div>
+            <span class="status paid">Preview</span>
+          </div>
           <div class="form-actions">
-            <button class="ghost-button" type="submit">${icon("check")} Save theme</button>
+            <button class="ghost-button" type="submit">${icon("check")} Save branding</button>
           </div>
         </form>
       </section>
@@ -3726,6 +4075,53 @@ function renderSettings() {
         <div class="form-actions">
           <button class="ghost-button" type="button" data-view="communications">${icon("message")} Manage templates</button>
         </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderStaffSettings() {
+  const user = currentStaffUser();
+  const clock = dailyStaffClock();
+  return `
+    <section class="metric-grid settings-metrics">
+      ${statCard("Signed in", user?.name || currentStaffName(), user?.role || "Staff")}
+      ${statCard("Clock-in", clock.staff.time || clock.senior.time || "-", "Today")}
+      ${statCard("Access", "Staff", "Dashboard, bookings, customers")}
+    </section>
+    <section class="settings-grid" style="margin-top: 16px;">
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">My account</h3>
+            <p class="panel-subtitle">Update your own sign-in details. Admin settings are managed by senior staff.</p>
+          </div>
+        </div>
+        <form id="staff-account-form" class="form-grid">
+          <div class="field">
+            <label for="staff-account-name">Name</label>
+            <input id="staff-account-name" name="name" value="${escapeAttribute(user?.name || currentStaffName())}" disabled />
+          </div>
+          <div class="field">
+            <label for="staff-account-role">Role</label>
+            <input id="staff-account-role" value="${escapeAttribute(user?.role || "Staff")}" disabled />
+          </div>
+          <div class="field">
+            <label for="staff-account-username">Username</label>
+            <input id="staff-account-username" value="${escapeAttribute(user?.username || usernameFromName(user?.name || currentStaffName()))}" disabled />
+          </div>
+          <div class="field">
+            <label for="staff-account-password">New password</label>
+            <input id="staff-account-password" name="password" type="password" placeholder="Leave blank to keep current password" />
+          </div>
+          <div class="settings-summary-card full">
+            <strong>Your access</strong>
+            <p>You can use Dashboard, Bookings, Customers, and your own Settings. Senior staff can manage orders, inventory, invoices, communication templates, staff metrics, branding, and business rules.</p>
+          </div>
+          <div class="form-actions">
+            <button class="button gold" type="submit">${icon("check")} Save account</button>
+          </div>
+        </form>
       </section>
     </section>
   `;
@@ -4406,7 +4802,7 @@ function customerQuotations(customerId) {
 
 function quotationCard(quote) {
   const lineSummary = quote.lines?.map((line) => line.label).filter(Boolean).join(", ") || "No items";
-  const status = quote.status === "Invoiced" ? "ready" : "partial";
+  const status = quote.status === "Invoiced" ? "ready" : quote.status === "Declined" ? "cancelled" : "partial";
   return `
     <article class="item-card">
       <div class="row">
@@ -4420,6 +4816,11 @@ function quotationCard(quote) {
       <div class="row">
         <span class="meta">Saved ${formatDate(quote.updated || quote.createdDate)}</span>
         <strong>${money(quote.total || 0)}</strong>
+      </div>
+      <div class="row wrap">
+        <button class="ghost-button compact-button" data-action="edit-quote" data-id="${quote.id}">${icon("invoice")} Edit</button>
+        <button class="button compact-button" data-action="convert-quote" data-id="${quote.id}" ${quote.status === "Invoiced" ? "disabled" : ""}>Create invoice</button>
+        <button class="ghost-button compact-button" data-action="decline-quote" data-id="${quote.id}" ${quote.status === "Declined" || quote.status === "Invoiced" ? "disabled" : ""}>Decline</button>
       </div>
     </article>
   `;
@@ -4601,8 +5002,9 @@ function renderCalendar(dateString, mode) {
 
 function renderScheduleCalendar(days, mode) {
   const times = calendarTimeSlots(days);
+  const markerDate = days.includes(todayKey()) ? todayKey() : days.includes(state.calendarDate) ? state.calendarDate : days[0];
   return `
-    <div class="schedule-calendar ${mode === "month" ? "month-schedule" : "week-schedule"}" style="--day-count: ${days.length};">
+    <div class="schedule-calendar ${mode === "month" ? "month-schedule" : "week-schedule"}" style="--day-count: ${days.length};" data-now-marker-date="${markerDate}">
       <div class="schedule-corner">Time</div>
       ${days
         .map(
@@ -4624,7 +5026,8 @@ function renderScheduleCalendar(days, mode) {
                   .filter((appt) => appt.date === date && appt.time === time)
                   .sort((a, b) => a.name.localeCompare(b.name));
                 return `
-                  <div class="schedule-slot">
+                  <div class="schedule-slot" data-slot-date="${date}" data-slot-time="${time}">
+                    <span class="schedule-now-marker" data-now-marker hidden><span>Now</span></span>
                     ${appointments.map(calendarEvent).join("")}
                   </div>
                 `;
@@ -4761,6 +5164,12 @@ function bindEvents() {
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (!canAccessView(button.dataset.view)) {
+        state.toast = "You need senior staff access for that area.";
+        saveState();
+        render();
+        return;
+      }
       state.currentView = button.dataset.view;
       state.toast = "";
       state.modal = null;
@@ -4952,6 +5361,8 @@ function bindEvents() {
       form.addEventListener("submit", handleSettingsFinanceSubmit);
     } else if (form.id === "finance-access-form") {
       form.addEventListener("submit", handleFinanceAccessSubmit);
+    } else if (form.id === "staff-account-form") {
+      form.addEventListener("submit", handleStaffAccountSubmit);
     } else {
       form.addEventListener("submit", handleBookingSubmit);
     }
@@ -4989,6 +5400,7 @@ function handleAction(button) {
   if (action === "open-staff-dropdown") openStaffDropdown(button.dataset.role || "senior");
   if (action === "select-staff") selectStaff(id, button.dataset.role || "senior");
   if (action === "clock-in-staff") clockInStaff(button.dataset.role || "senior");
+  if (action === "sign-out") signOutStaff();
   if (action === "new-order") openNewOrderForm();
   if (action === "new-staff-booking") openStaffBookingForm();
   if (action === "add-inventory") openInventoryForm();
@@ -4998,6 +5410,9 @@ function handleAction(button) {
   if (action === "save-quote") saveQuoteFromOrderForm({ close: true });
   if (action === "show-invoice-step") showInvoiceStep();
   if (action === "show-quote-step") showQuoteStep();
+  if (action === "edit-quote") editQuotation(id);
+  if (action === "convert-quote") convertQuotation(id);
+  if (action === "decline-quote") declineQuotation(id);
   if (action === "open-dashboard-metric") openDashboardMetric(id);
   if (action === "open-dashboard-attention") openDashboardAttention(id);
   if (action === "open-appointment-detail") openAppointmentDetail(id);
@@ -5031,9 +5446,37 @@ function handleAction(button) {
   if (action === "lock-finance") lockFinance();
 }
 
-function openNewOrderForm(customerId = "", appointmentId = null) {
-  state.modal = { type: "order", customerId, appointmentId };
+function openNewOrderForm(customerId = "", appointmentId = null, quoteId = "") {
+  state.modal = { type: "order", customerId, appointmentId, quoteId };
   state.toast = "";
+  saveState();
+  render();
+}
+
+function editQuotation(quoteId) {
+  const quote = (state.quotations || []).find((item) => item.id === quoteId);
+  if (!quote) return;
+  openNewOrderForm(quote.customerId, null, quote.id);
+}
+
+function convertQuotation(quoteId) {
+  editQuotation(quoteId);
+  setTimeout(() => showInvoiceStep(), 0);
+}
+
+function declineQuotation(quoteId) {
+  const quote = (state.quotations || []).find((item) => item.id === quoteId);
+  if (!quote) return;
+  quote.status = "Declined";
+  quote.updated = DEMO_TODAY;
+  logCustomerCommunication({
+    customerId: quote.customerId,
+    title: "Quote declined",
+    message: `${quote.number} marked as declined.`,
+    channel: "Internal note",
+    status: "Logged",
+  });
+  state.toast = `${quote.number} marked as declined.`;
   saveState();
   render();
 }
@@ -5060,16 +5503,30 @@ function setQuoteInvoiceStep(step) {
 function showInvoiceStep() {
   const selectedItems = selectedOrderItemValues();
   if (!selectedItems.length) {
-    state.toast = "Add at least one item before creating the invoice.";
-    render();
+    showOrderFormMessage("Add at least one item before creating the invoice.");
     return;
   }
   if (!saveQuoteFromOrderForm({ close: false })) return;
+  showOrderFormMessage("");
   setQuoteInvoiceStep("invoice");
 }
 
 function showQuoteStep() {
+  showOrderFormMessage("");
   setQuoteInvoiceStep("quote");
+}
+
+function showOrderFormMessage(message) {
+  const box = document.querySelector("[data-order-form-message]");
+  if (!box) {
+    if (message) state.toast = message;
+    return;
+  }
+  box.textContent = message || "";
+  box.hidden = !message;
+  if (message) {
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function saveQuoteFromOrderForm({ close = false } = {}) {
@@ -5080,6 +5537,7 @@ function saveQuoteFromOrderForm({ close = false } = {}) {
   if (!customer) return false;
   const quote = saveQuotationFromOrderData(data, customer);
   if (!quote) return false;
+  showOrderFormMessage("");
   state.selectedCustomerId = customer.id;
   state.modal = close
     ? null
@@ -5101,8 +5559,7 @@ function saveCustomerProfileFromOrderData(data) {
   const eventName = String(data.get("eventName") || "").trim();
   const address = String(data.get("address") || "").trim();
   if (!name || !phone) {
-    state.toast = "Add the customer's name and phone before saving the quote.";
-    render();
+    showOrderFormMessage("Add the customer's name and phone before saving the quote.");
     return null;
   }
   let customer =
@@ -5137,8 +5594,7 @@ function saveQuotationFromOrderData(data, customer) {
   const selectedItems = data.getAll("items").map((value) => String(value || "").trim()).filter(Boolean);
   const customItem = String(data.get("customItem") || "").trim();
   if (!selectedItems.length) {
-    state.toast = "Select at least one item before saving the quote.";
-    render();
+    showOrderFormMessage("Select at least one item before saving the quote.");
     return null;
   }
   const inventoryItems = selectedItems.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
@@ -5172,7 +5628,29 @@ function saveQuotationFromOrderData(data, customer) {
     updated: DEMO_TODAY,
   });
   if (!existing) state.quotations.unshift(quote);
+  logCustomerCommunication({
+    customerId: customer.id,
+    title: existing ? "Quote updated" : "Quote saved",
+    message: `${quote.number} saved for ${money(total)}. Due ${formatDate(quote.dueDate)}.`,
+    channel: "Email + text",
+    status: "Saved",
+  });
   return quote;
+}
+
+function logCustomerCommunication({ customerId, title, message, channel = "Email + text", direction = "Outbound", status = "Sent" }) {
+  state.customComms = state.customComms || [];
+  state.customComms.unshift({
+    id: createId("comm"),
+    customerId,
+    title,
+    channel,
+    direction,
+    message,
+    status,
+    date: DEMO_TODAY,
+    staff: currentStaffName(),
+  });
 }
 
 function openStaffBookingForm() {
@@ -5236,7 +5714,7 @@ function selectStaff(name, role = "senior") {
   clock.date = DEMO_TODAY;
   clock[safeRole] = { name, time: currentClockTime() };
   state.staffClock = clock;
-  state.activeStaff = clock.senior.name;
+  state.activeStaff = name;
   state.clockedInDate = DEMO_TODAY;
   state.staffDropdownOpen = false;
   state.staffDropdownRole = "";
@@ -5260,6 +5738,21 @@ function clockInStaff(role = "senior") {
     return;
   }
   selectStaff(selected, safeRole);
+}
+
+function signOutStaff() {
+  const clock = dailyStaffClock();
+  clock.senior = { name: "", time: "" };
+  clock.staff = { name: "", time: "" };
+  state.staffClock = clock;
+  state.activeStaff = "";
+  state.staffDropdownOpen = false;
+  state.staffDropdownRole = "";
+  state.modal = null;
+  state.currentView = "dashboard";
+  state.toast = "Signed out.";
+  saveState();
+  render();
 }
 
 function assignTodaysBookingsToSenior(name) {
@@ -5386,9 +5879,12 @@ function updateOrderSelectionSummary() {
   const select = document.querySelector("[data-input='order-item']");
   const summary = document.querySelector("[data-order-selection-summary]");
   const values = selectedOrderItemValues(select);
+  if (values.length) showOrderFormMessage("");
   toggleCustomOrderField(values);
   if (!summary) return;
   const items = values.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
+  const loadedQuoteId = document.querySelector("[data-loaded-quote]")?.dataset.loadedQuote || "";
+  const loadedQuote = loadedQuoteId ? (state.quotations || []).find((quote) => quote.id === loadedQuoteId) : null;
   const customSelected = values.includes("__custom");
   const total = items.reduce((sum, item) => sum + inventoryPrice(item), 0);
   const totalInput = document.querySelector("[data-order-total]");
@@ -5412,7 +5908,7 @@ function updateOrderSelectionSummary() {
                   <strong>${inventoryOrderLabel(item)}</strong>
                   <label class="invoice-line-description" for="order-description-${item.id}">
                     <span>Invoice description</span>
-                    <textarea id="order-description-${item.id}" name="itemDescription_${item.id}" placeholder="Description for this invoice only">${escapeHtml(item.description || inventoryOrderLabel(item))}</textarea>
+                    <textarea id="order-description-${item.id}" name="itemDescription_${item.id}" placeholder="Description for this invoice only">${escapeHtml(loadedQuote?.lines?.find((line) => line.id === item.id)?.description || item.description || inventoryOrderLabel(item))}</textarea>
                   </label>
                 </span>
                 <strong>${money(inventoryPrice(item))}</strong>
@@ -5459,19 +5955,27 @@ function filterOrderItemPicker(query) {
   const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
   const rows = Array.from(document.querySelectorAll("[data-item-search-text]"));
   let visibleCount = 0;
+  let matchCount = 0;
+  const maxVisible = 12;
   rows.forEach((row) => {
     const checkbox = row.querySelector("input[name='items']");
     const selected = checkbox?.checked;
     const haystack = row.dataset.itemSearchText || "";
     const matches = terms.length > 0 && terms.every((term) => haystack.includes(term));
-    const visible = selected || matches;
+    if (matches) matchCount += 1;
+    const visible = selected || (matches && visibleCount < maxVisible);
     row.hidden = !visible;
     if (visible) visibleCount += 1;
   });
   const empty = document.querySelector("[data-item-search-empty]");
   if (empty) {
-    empty.textContent = terms.length ? "No matching items. Try another search." : "Start typing to find inventory items.";
+    empty.textContent = terms.length
+      ? matchCount > maxVisible
+        ? `Showing first ${maxVisible} matches. Keep typing to narrow the list.`
+        : "No matching items. Try another search."
+      : "Start typing to find inventory items.";
     empty.hidden = visibleCount > 0;
+    if (matchCount > maxVisible) empty.hidden = false;
   }
 }
 
@@ -5709,6 +6213,13 @@ function handleOrderSubmit(event) {
       appointment.notes = `${appointment.notes} Quote created and fitting booked.`;
     }
   }
+  logCustomerCommunication({
+    customerId: customer.id,
+    title: "Invoice emailed",
+    message: `${invoice.number} created from ${quote.number} for ${money(total)}. Deposit paid: ${money(paid)}.`,
+    channel: "Email + text",
+    status: "Sent",
+  });
   state.selectedCustomerId = customer.id;
   state.currentView = "orders";
   state.modal = { type: "invoice-pdf", customerId: customer.id, orderId: order.id, invoiceId: invoice.id };
@@ -5819,9 +6330,32 @@ function handleCustomCommsSubmit(event) {
 function handleStaffLoginSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
-  const name = String(data.get("staffName") || "").trim();
-  if (!name) return;
-  selectStaff(name, "senior");
+  const username = String(data.get("username") || "").trim().toLowerCase();
+  const password = String(data.get("password") || "");
+  const user = (state.staffUsers || []).find((staffUser) => String(staffUser.username || usernameFromName(staffUser.name)).toLowerCase() === username);
+  if (!user || String(user.password || "staff123") !== password) {
+    state.toast = "Username or password is incorrect.";
+    render();
+    return;
+  }
+  selectStaff(user.name, user.role === "Staff" ? "staff" : "senior");
+}
+
+function handleStaffAccountSubmit(event) {
+  event.preventDefault();
+  const user = currentStaffUser();
+  if (!user) return;
+  const data = new FormData(event.currentTarget);
+  const password = String(data.get("password") || "").trim();
+  if (!password) {
+    state.toast = "Enter a new password to update your account.";
+    render();
+    return;
+  }
+  user.password = password;
+  state.toast = "Account settings updated.";
+  saveState();
+  render();
 }
 
 function handleTemplateEditSubmit(event) {
@@ -5939,6 +6473,8 @@ function handleSettingsUserSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const name = String(data.get("name") || "").trim();
+  const username = String(data.get("username") || "").trim() || usernameFromName(name);
+  const password = String(data.get("password") || "").trim() || "staff123";
   if (!name) return;
   state.staffUsers = state.staffUsers || [];
   if (state.staffUsers.some((user) => user.name.toLowerCase() === name.toLowerCase())) {
@@ -5946,9 +6482,16 @@ function handleSettingsUserSubmit(event) {
     render();
     return;
   }
+  if (state.staffUsers.some((user) => String(user.username || "").toLowerCase() === username.toLowerCase())) {
+    state.toast = `${username} is already a username.`;
+    render();
+    return;
+  }
   state.staffUsers.push({
     id: createId("u"),
     name,
+    username,
+    password,
     role: String(data.get("role") || "Staff"),
     financeAccess: data.get("financeAccess") === "on",
     status: "Active",
@@ -5962,8 +6505,18 @@ function handleSettingsUserSubmit(event) {
 function handleSettingsThemeSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
-  state.settings = { ...seedState.settings, ...(state.settings || {}), theme: String(data.get("theme") || "Apple clean") };
-  state.toast = `${state.settings.theme} theme selected.`;
+  state.settings = {
+    ...seedState.settings,
+    ...(state.settings || {}),
+    theme: String(data.get("theme") || "Apple clean"),
+    brandName: String(data.get("brandName") || "Tux Studio OS").trim() || "Tux Studio OS",
+    brandSubtitle: String(data.get("brandSubtitle") || "CRM, bookings, orders, stock").trim() || "CRM, bookings, orders, stock",
+    logoText: String(data.get("logoText") || "TS").trim().slice(0, 4) || "TS",
+    logoImageUrl: String(data.get("logoImageUrl") || "").trim(),
+    primaryColour: validHexColour(data.get("primaryColour"), "#24466f"),
+    accentColour: validHexColour(data.get("accentColour"), "#8a650f"),
+  };
+  state.toast = "Branding and theme saved.";
   saveState();
   render();
 }
@@ -6504,6 +7057,14 @@ function icon(name) {
     coin: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M9 10h4.5a2 2 0 0 1 0 4H10"></path></svg>`,
   };
   return icons[name] || icons.dashboard;
+}
+
+function brandMark() {
+  const brand = brandSettings();
+  if (brand.logoImageUrl) {
+    return `<img src="${escapeAttribute(brand.logoImageUrl)}" alt="${escapeAttribute(brand.name)} logo" />`;
+  }
+  return `<span>${escapeHtml(brand.logoText)}</span>`;
 }
 
 function tuxMark() {
