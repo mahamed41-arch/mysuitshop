@@ -50,6 +50,7 @@ const seedState = {
   toast: "",
   modal: null,
   customComms: [],
+  quotations: [],
   communicationTemplates: [
     {
       id: "tpl-booking-confirmation",
@@ -446,6 +447,7 @@ const seedState = {
 };
 
 let state = normaliseInventoryState(loadState());
+let renderRecoveryAttempted = false;
 allocateAllStock({ addHistory: false });
 
 const navItems = [
@@ -463,16 +465,26 @@ const navItems = [
 function loadState() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return structuredClone(seedState);
-    return { ...structuredClone(seedState), ...JSON.parse(saved), financeUnlocked: false, toast: "", modal: null };
+    if (!saved) return cloneData(seedState);
+    return { ...cloneData(seedState), ...JSON.parse(saved), financeUnlocked: false, toast: "", modal: null };
   } catch {
-    return structuredClone(seedState);
+    return cloneData(seedState);
   }
+}
+
+function cloneData(value) {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function selectorEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 function normaliseInventoryState(sourceState) {
   const nextState = { ...sourceState };
-  nextState.settings = { ...structuredClone(seedState.settings), ...(sourceState.settings || {}) };
+  nextState.settings = { ...cloneData(seedState.settings), ...(sourceState.settings || {}) };
   nextState.staffUsers = Array.isArray(sourceState.staffUsers)
     ? sourceState.staffUsers
     : staffMembersFromSource(sourceState).map((name, index) => ({
@@ -492,6 +504,11 @@ function normaliseInventoryState(sourceState) {
             .replace(/\bOrdered\b/g, "Fitting"),
         )
       : [],
+  }));
+  nextState.quotations = (sourceState.quotations || []).map((quote) => ({
+    ...quote,
+    lines: Array.isArray(quote.lines) ? quote.lines : [],
+    status: quote.status || "Quoted",
   }));
   if (!sourceState.dashboardPriorityDemoSeeded && !nextState.orders.some((order) => order.fittingRecord?.priority)) {
     const demoPriorityOrder = nextState.orders.find((order) => order.id === "o3") || nextState.orders.find((order) => order.fittingDate);
@@ -618,14 +635,27 @@ function render() {
         ${renderStaffLoginModal()}
       `;
     }
-    bindEvents();
-    centerActiveOrderStageTab();
+    try {
+      bindEvents();
+      centerActiveOrderStageTab();
+    } catch (bindError) {
+      console.error("Tux Studio OS interaction setup error", bindError);
+    }
+    renderRecoveryAttempted = false;
   } catch (error) {
-    state = structuredClone(seedState);
+    console.error("Tux Studio OS render error", error);
+    state = cloneData(seedState);
+    saveState();
+    if (!renderRecoveryAttempted) {
+      renderRecoveryAttempted = true;
+      render();
+      return;
+    }
     app.innerHTML = `
       <div class="load-error">
         <h1>Tux Studio OS</h1>
         <p>The preview reset itself because old demo data was blocking the in-app browser.</p>
+        <p class="meta">${escapeHtml(error?.message || "Unknown render error")}</p>
         <button class="button gold" onclick="location.reload()">Reload prototype</button>
       </div>
     `;
@@ -635,7 +665,8 @@ function render() {
 function centerActiveOrderStageTab() {
   const activeTab = document.querySelector(".order-stage-tabs button.active");
   if (!activeTab) return;
-  requestAnimationFrame(() => {
+  const run = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+  run(() => {
     activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   });
 }
@@ -881,9 +912,15 @@ function renderModal() {
 }
 
 function renderNewOrderModal() {
-  const selectedCustomerId = state.modal.customerId || state.selectedCustomerId;
-  const selectedCustomer = state.customers.find((customer) => customer.id === selectedCustomerId);
+  const quote = state.modal.quoteId ? (state.quotations || []).find((item) => item.id === state.modal.quoteId) : null;
+  const selectedCustomerId = state.modal.customerId || quote?.customerId || "";
+  const selectedCustomer = selectedCustomerId ? state.customers.find((customer) => customer.id === selectedCustomerId) : null;
   const customerValue = selectedCustomer ? selectedCustomer.id : "new";
+  const quoteItemIds = quote?.lines?.map((line) => line.id).filter(Boolean) || [];
+  const quoteTotal = Number(quote?.total || 650);
+  const quoteDiscount = Number(quote?.discount || 0);
+  const quoteDue = quote?.dueDate || "2026-06-30";
+  const customQuoteLine = quote?.lines?.find((line) => line.id === "__custom");
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card wide order-invoice-modal" role="dialog" aria-modal="true" aria-labelledby="new-order-title">
@@ -896,7 +933,7 @@ function renderNewOrderModal() {
         </div>
         <form id="new-order-form" class="invoice-composer">
           <div class="invoice-scroll-body">
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="quote">
             <div class="invoice-section-head">
               <h4>Step 1: Customer and measurements</h4>
             </div>
@@ -931,7 +968,7 @@ function renderNewOrderModal() {
                 </div>
                 <div class="field">
                   <label for="order-event">Event</label>
-                  <input id="order-event" name="eventName" value="${escapeAttribute(selectedCustomer?.event || "")}" placeholder="Wedding - 22 Jun 2026" />
+                  <input id="order-event" name="eventName" value="${escapeAttribute(quote?.eventDate || selectedCustomer?.event || "")}" placeholder="Wedding - 22 Jun 2026" />
                 </div>
               </div>
               <div class="field full">
@@ -940,7 +977,7 @@ function renderNewOrderModal() {
               </div>
             </div>
             </section>
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="quote">
             <div class="row wrap">
               <div>
                 <h4 class="panel-title">Measurements</h4>
@@ -960,7 +997,7 @@ function renderNewOrderModal() {
                 .join("")}
             </div>
             </section>
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="quote">
             <div class="invoice-section-head">
               <h4>Build quote</h4>
               <span class="meta">Search, add items, adjust the description, then show the quote preview.</span>
@@ -969,12 +1006,12 @@ function renderNewOrderModal() {
               <label for="order-item-search">Search items</label>
               <input id="order-item-search" type="search" data-order-item-search placeholder="Type jacket, shirt, shoes, size, colour..." autocomplete="off" />
             </div>
-            <div class="invoice-item-picker" data-input="order-item">
-              ${renderOrderItemPicker()}
+            <div class="invoice-item-picker" data-input="order-item" data-loaded-quote="${escapeAttribute(state.modal.quoteId || "")}">
+              ${renderOrderItemPicker(quoteItemIds)}
             </div>
           <div class="field full" data-custom-order-field hidden>
             <label for="order-custom-item">Custom order details</label>
-            <input id="order-custom-item" name="customItem" placeholder="Custom black peak lapel tuxedo, special cloth, bespoke request..." />
+            <input id="order-custom-item" name="customItem" value="${escapeAttribute(customQuoteLine?.label || "")}" placeholder="Custom black peak lapel tuxedo, special cloth, bespoke request..." />
           </div>
           <div class="field full">
             <div class="selection-summary" data-order-selection-summary>
@@ -984,31 +1021,40 @@ function renderNewOrderModal() {
             <div class="invoice-compact-grid">
               <div class="field">
                 <label for="order-due">Due date</label>
-                <input id="order-due" name="due" type="date" required value="2026-06-30" />
+                <input id="order-due" name="due" type="date" required value="${escapeAttribute(quoteDue)}" />
               </div>
               <div class="field">
                 <label for="order-total">Invoice total</label>
-                <input id="order-total" name="total" type="number" min="0" step="1" required value="650" data-order-total />
+                <input id="order-total" name="total" type="number" min="0" step="1" required value="${quoteTotal}" data-order-total />
               </div>
               <div class="field">
                 <label for="order-discount">Discount</label>
-                <input id="order-discount" name="discount" type="number" min="0" step="1" value="0" data-order-discount />
+                <input id="order-discount" name="discount" type="number" min="0" step="1" value="${quoteDiscount}" data-order-discount />
               </div>
             </div>
-            <div class="quote-preview-card">
-              <div>
-                <span>PDF quote preview</span>
-                <strong data-quote-total>${money(650)}</strong>
-                <small>Show this to the customer before creating the invoice.</small>
-              </div>
-              <div class="quote-preview-lines">
-                <p><span>Inventory total</span><strong data-quote-inventory>${money(0)}</strong></p>
-                <p><span>Discount</span><strong data-quote-discount>${money(0)}</strong></p>
-                <p><span>Quote total</span><strong data-quote-balance>${money(650)}</strong></p>
+            <div class="quote-preview-card quote-document-preview">
+              <div class="quote-doc-paper">
+                <div class="quote-doc-head">
+                  <span>QUOTE PREVIEW</span>
+                  <strong>Tux Studio OS</strong>
+                </div>
+                <div class="quote-doc-customer">
+                  <p><span>Customer</span><strong data-quote-customer>${escapeHtml(selectedCustomer?.name || "New customer")}</strong></p>
+                  <p><span>Event date</span><strong data-quote-event>${escapeHtml(quote?.eventDate || selectedCustomer?.event || "Not set")}</strong></p>
+                  <p><span>Due date</span><strong data-quote-due>${formatDate(quoteDue)}</strong></p>
+                </div>
+                <div class="quote-doc-lines" data-quote-lines>
+                  <p>No items selected.</p>
+                </div>
+                <div class="quote-preview-lines">
+                  <p><span>Inventory total</span><strong data-quote-inventory>${money(0)}</strong></p>
+                  <p><span>Discount</span><strong data-quote-discount>${money(quoteDiscount)}</strong></p>
+                  <p><span>Quote total</span><strong data-quote-total>${money(quoteTotal)}</strong></p>
+                </div>
               </div>
             </div>
             </section>
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="invoice" hidden>
             <div>
               <h4 class="panel-title">Step 2: Create invoice and take deposit</h4>
               <p class="panel-subtitle">If the customer is happy to proceed, record the deposit and send the full invoice PDF.</p>
@@ -1030,7 +1076,7 @@ function renderNewOrderModal() {
               </div>
             </div>
             </section>
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="invoice" hidden>
             <div>
               <h4 class="panel-title">Book their fitting</h4>
               <p class="panel-subtitle">This creates the next appointment and sends the same confirmation/reminder flow.</p>
@@ -1046,7 +1092,7 @@ function renderNewOrderModal() {
               </div>
             </div>
             </section>
-            <section class="invoice-section">
+            <section class="invoice-section" data-quote-step="invoice" hidden>
             <div class="field full">
               <label for="order-notes">Order notes</label>
               <textarea id="order-notes" name="notes" placeholder="Alterations, fit preference, fabric, collection notes"></textarea>
@@ -1074,12 +1120,18 @@ function renderNewOrderModal() {
             </section>
           </div>
           <div class="invoice-save-bar">
-            <div>
-              <span>Amount due</span>
-              <strong data-amount-due>${money(650)}</strong>
+            <div data-quote-step="quote">
+              <span>Quote total</span>
+              <strong data-quote-footer-total>${money(quoteTotal)}</strong>
             </div>
-            <button class="ghost-button" type="button" data-action="close-modal">Cancel</button>
-            <button class="button gold" type="submit">${icon("invoice")} Create invoice</button>
+            <div data-quote-step="invoice" hidden>
+              <span>Amount due</span>
+              <strong data-amount-due>${money(quoteTotal)}</strong>
+            </div>
+            <button class="ghost-button" type="button" data-action="save-quote" data-quote-step="quote">Save quote</button>
+            <button class="button gold" type="button" data-action="show-invoice-step" data-quote-step="quote">${icon("invoice")} Create invoice</button>
+            <button class="ghost-button" type="button" data-action="show-quote-step" data-quote-step="invoice" hidden>Back to quote</button>
+            <button class="button gold" type="submit" data-quote-step="invoice" hidden>${icon("invoice")} Create and email invoice</button>
           </div>
         </form>
       </section>
@@ -1098,8 +1150,9 @@ function inventoryOrderOptions() {
     .join("");
 }
 
-function renderOrderItemPicker() {
+function renderOrderItemPicker(selectedValues = []) {
   const items = Array.isArray(state.inventory) ? state.inventory : [];
+  const selectedSet = new Set(selectedValues);
   return `
     <div class="invoice-item-list">
       ${items
@@ -1107,7 +1160,7 @@ function renderOrderItemPicker() {
           const available = inventoryAvailable(item);
           return `
             <label class="invoice-item-row" for="order-item-${item.id}" data-item-search-text="${escapeAttribute(`${inventoryOrderLabel(item)} ${item.category || ""} ${item.color || ""} ${item.size || ""} ${item.material || ""} ${item.description || ""}`.toLowerCase())}" hidden>
-              <input id="order-item-${item.id}" name="items" type="checkbox" value="${escapeAttribute(item.id)}" data-order-item-choice />
+              <input id="order-item-${item.id}" name="items" type="checkbox" value="${escapeAttribute(item.id)}" data-order-item-choice ${selectedSet.has(item.id) ? "checked" : ""} />
               <span class="invoice-item-icon">${icon("invoice")}</span>
               <span>
                 <strong>${inventoryParentName(item)}</strong>
@@ -1121,7 +1174,7 @@ function renderOrderItemPicker() {
         })
         .join("")}
       <label class="invoice-item-row" for="order-item-custom" data-item-search-text="custom order bespoke manual special cloth" hidden>
-        <input id="order-item-custom" name="items" type="checkbox" value="__custom" data-order-item-choice />
+        <input id="order-item-custom" name="items" type="checkbox" value="__custom" data-order-item-choice ${selectedSet.has("__custom") ? "checked" : ""} />
         <span class="invoice-item-icon">${icon("plus")}</span>
         <span>
           <strong>Custom order</strong>
@@ -1144,6 +1197,7 @@ function renderCustomerModal() {
   const customer = getCustomer(state.modal.customerId);
   const orders = state.orders.filter((order) => order.customerId === customer.id);
   const invoices = state.invoices.filter((invoice) => invoice.customerId === customer.id);
+  const quotations = customerQuotations(customer.id);
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="customer-order-title">
@@ -1184,6 +1238,12 @@ function renderCustomerModal() {
             <h4 class="panel-title modal-section-head">Invoices</h4>
             <div class="list">
               ${invoices.map((invoice) => invoiceCard(invoice)).join("") || emptyState("No invoices for this customer yet.")}
+            </div>
+          </div>
+          <div>
+            <h4 class="panel-title modal-section-head">Quotations</h4>
+            <div class="list">
+              ${quotations.map(quotationCard).join("") || emptyState("No saved quotations for this customer yet.")}
             </div>
           </div>
         </section>
@@ -2226,6 +2286,7 @@ function renderCustomers() {
   const selected = state.customers.find((customer) => customer.id === state.selectedCustomerId) || filtered[0] || state.customers[0];
   const orders = state.orders.filter((order) => order.customerId === selected.id);
   const invoices = state.invoices.filter((invoice) => invoice.customerId === selected.id);
+  const quotations = customerQuotations(selected.id);
 
   return `
     <section class="content-grid">
@@ -2308,6 +2369,11 @@ function renderCustomers() {
             </div>
           </div>
         </section>
+        <div class="divider"></div>
+        <h3 class="panel-title">Quotations</h3>
+        <div class="list" style="margin-top: 10px;">
+          ${quotations.map(quotationCard).join("") || emptyState("No saved quotations yet.")}
+        </div>
         <div class="divider"></div>
         ${renderCustomerFittings(selected, orders)}
         <div class="divider"></div>
@@ -4332,6 +4398,33 @@ function invoiceCard(invoice) {
   `;
 }
 
+function customerQuotations(customerId) {
+  return (state.quotations || [])
+    .filter((quote) => quote.customerId === customerId)
+    .sort((a, b) => String(b.updated || b.createdDate || "").localeCompare(String(a.updated || a.createdDate || "")));
+}
+
+function quotationCard(quote) {
+  const lineSummary = quote.lines?.map((line) => line.label).filter(Boolean).join(", ") || "No items";
+  const status = quote.status === "Invoiced" ? "ready" : "partial";
+  return `
+    <article class="item-card">
+      <div class="row">
+        <div>
+          <p class="name">${quote.number}</p>
+          <p class="meta">${lineSummary}</p>
+          <p class="meta">Event ${escapeHtml(quote.eventDate || "Not set")} • Due ${formatDate(quote.dueDate)}</p>
+        </div>
+        <span class="status ${status}">${quote.status || "Quoted"}</span>
+      </div>
+      <div class="row">
+        <span class="meta">Saved ${formatDate(quote.updated || quote.createdDate)}</span>
+        <strong>${money(quote.total || 0)}</strong>
+      </div>
+    </article>
+  `;
+}
+
 function invoiceRow(invoice) {
   const customer = getCustomer(invoice.customerId);
   const order = state.orders.find((item) => item.id === invoice.orderId);
@@ -4663,6 +4756,8 @@ function appointmentTypeTag(type) {
 }
 
 function bindEvents() {
+  bindActionButtons();
+
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -4781,21 +4876,26 @@ function bindEvents() {
 
   const orderItemSelect = document.querySelector("[data-input='order-item']");
   if (orderItemSelect) {
-    orderItemSelect.addEventListener("change", () => updateOrderSelectionSummary());
-    updateOrderSelectionSummary();
+    orderItemSelect.addEventListener("change", safeUpdateOrderSelectionSummary);
+    safeUpdateOrderSelectionSummary();
   }
 
   const itemSearchInput = document.querySelector("[data-order-item-search]");
   if (itemSearchInput) {
-    itemSearchInput.addEventListener("input", () => filterOrderItemPicker(itemSearchInput.value));
-    filterOrderItemPicker(itemSearchInput.value);
+    itemSearchInput.addEventListener("input", () => safeFilterOrderItemPicker(itemSearchInput.value));
+    safeFilterOrderItemPicker(itemSearchInput.value);
   }
 
   document.querySelectorAll("[data-order-total], [data-order-discount], [data-order-paid]").forEach((input) => {
     input.addEventListener("input", () => {
       if (input.matches("[data-order-total]")) input.dataset.manualTotal = "true";
-      updateOrderInvoiceSummary();
+      safeUpdateOrderInvoiceSummary();
     });
+  });
+
+  document.querySelectorAll("#order-customer-name, #order-event, #order-due").forEach((input) => {
+    input.addEventListener("input", safeUpdateOrderInvoiceSummary);
+    input.addEventListener("change", safeUpdateOrderInvoiceSummary);
   });
 
   document.querySelectorAll("form [data-booking-type], form [data-booking-date], form [data-booking-order]").forEach((field) => {
@@ -4807,13 +4907,6 @@ function bindEvents() {
   document.querySelectorAll("[data-fitting-priority]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => syncFittingPriorityField(checkbox));
     syncFittingPriorityField(checkbox);
-  });
-
-  document.querySelectorAll("[data-action]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      handleAction(button);
-    });
   });
 
   document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
@@ -4865,6 +4958,15 @@ function bindEvents() {
   });
 }
 
+function bindActionButtons() {
+  document.querySelectorAll("[data-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handleAction(button);
+    });
+  });
+}
+
 function syncFittingPriorityField(checkbox) {
   const form = checkbox.closest("form");
   const field = form?.querySelector(`[data-fitting-priority-due="${checkbox.dataset.fittingPriority}"]`);
@@ -4879,7 +4981,7 @@ function handleAction(button) {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (action === "reset") {
-    state = structuredClone(seedState);
+    state = cloneData(seedState);
     state.toast = "Demo data has been reset.";
     saveState();
     render();
@@ -4893,6 +4995,9 @@ function handleAction(button) {
   if (action === "new-order-for-customer") openNewOrderForm(id);
   if (action === "sale-from-appointment") openNewOrderForm(id, button.dataset.appointment);
   if (action === "close-modal") closeModal();
+  if (action === "save-quote") saveQuoteFromOrderForm({ close: true });
+  if (action === "show-invoice-step") showInvoiceStep();
+  if (action === "show-quote-step") showQuoteStep();
   if (action === "open-dashboard-metric") openDashboardMetric(id);
   if (action === "open-dashboard-attention") openDashboardAttention(id);
   if (action === "open-appointment-detail") openAppointmentDetail(id);
@@ -4926,11 +5031,148 @@ function handleAction(button) {
   if (action === "lock-finance") lockFinance();
 }
 
-function openNewOrderForm(customerId = state.selectedCustomerId, appointmentId = null) {
+function openNewOrderForm(customerId = "", appointmentId = null) {
   state.modal = { type: "order", customerId, appointmentId };
   state.toast = "";
   saveState();
   render();
+}
+
+function setQuoteInvoiceStep(step) {
+  const form = document.querySelector("#new-order-form");
+  if (!form) return;
+  const invoiceStep = step === "invoice";
+  form.classList.toggle("invoice-step-active", invoiceStep);
+  form.querySelectorAll("[data-quote-step='quote']").forEach((element) => {
+    element.hidden = invoiceStep;
+  });
+  form.querySelectorAll("[data-quote-step='invoice']").forEach((element) => {
+    element.hidden = !invoiceStep;
+  });
+  const scrollBody = form.closest(".order-invoice-modal")?.querySelector(".invoice-scroll-body");
+  if (scrollBody && typeof scrollBody.scrollTo === "function") {
+    scrollBody.scrollTo({ top: 0, behavior: "smooth" });
+  } else if (scrollBody) {
+    scrollBody.scrollTop = 0;
+  }
+}
+
+function showInvoiceStep() {
+  const selectedItems = selectedOrderItemValues();
+  if (!selectedItems.length) {
+    state.toast = "Add at least one item before creating the invoice.";
+    render();
+    return;
+  }
+  if (!saveQuoteFromOrderForm({ close: false })) return;
+  setQuoteInvoiceStep("invoice");
+}
+
+function showQuoteStep() {
+  setQuoteInvoiceStep("quote");
+}
+
+function saveQuoteFromOrderForm({ close = false } = {}) {
+  const form = document.querySelector("#new-order-form");
+  if (!form) return false;
+  const data = new FormData(form);
+  const customer = saveCustomerProfileFromOrderData(data);
+  if (!customer) return false;
+  const quote = saveQuotationFromOrderData(data, customer);
+  if (!quote) return false;
+  state.selectedCustomerId = customer.id;
+  state.modal = close
+    ? null
+    : { ...(state.modal || {}), type: "order", customerId: customer.id, quoteId: quote.id };
+  state.currentView = close ? "customers" : state.currentView;
+  state.toast = close
+    ? `Saved ${quote.number} to ${customer.name}'s profile.`
+    : `Saved ${quote.number} to ${customer.name}'s profile.`;
+  saveState();
+  if (close) render();
+  return true;
+}
+
+function saveCustomerProfileFromOrderData(data) {
+  const selectedCustomerId = String(data.get("customerId") || "");
+  const name = String(data.get("name") || "").trim();
+  const phone = String(data.get("phone") || "").trim();
+  const email = String(data.get("email") || "").trim();
+  const eventName = String(data.get("eventName") || "").trim();
+  const address = String(data.get("address") || "").trim();
+  if (!name || !phone) {
+    state.toast = "Add the customer's name and phone before saving the quote.";
+    render();
+    return null;
+  }
+  let customer =
+    state.customers.find((item) => item.id === selectedCustomerId) ||
+    (state.modal?.customerId ? state.customers.find((item) => item.id === state.modal.customerId) : null) ||
+    state.customers.find((item) => item.phone === phone || (email && item.email === email));
+  if (!customer) {
+    customer = addCustomer({
+      name,
+      phone,
+      email: email || "Not provided",
+      address: address || "Not collected",
+      event: eventName || "New quotation",
+      notes: "Added while preparing a quotation.",
+    });
+  } else {
+    customer.name = name || customer.name;
+    customer.phone = phone || customer.phone;
+    customer.email = email || customer.email;
+    customer.address = address || customer.address;
+    customer.event = eventName || customer.event;
+    customer.lastVisit = DEMO_TODAY;
+  }
+  ["chest", "waist", "hips", "inseam", "sleeve", "neck", "shoulder", "height"].forEach((measure) => {
+    const value = String(data.get(measure) || "").trim();
+    if (value) customer.measurements[measure] = value;
+  });
+  return customer;
+}
+
+function saveQuotationFromOrderData(data, customer) {
+  const selectedItems = data.getAll("items").map((value) => String(value || "").trim()).filter(Boolean);
+  const customItem = String(data.get("customItem") || "").trim();
+  if (!selectedItems.length) {
+    state.toast = "Select at least one item before saving the quote.";
+    render();
+    return null;
+  }
+  const inventoryItems = selectedItems.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
+  const lines = [
+    ...inventoryItems.map((item) => ({
+      id: item.id,
+      label: inventoryOrderLabel(item),
+      description: String(data.get(`itemDescription_${item.id}`) || item.description || inventoryOrderLabel(item)).trim(),
+      price: inventoryPrice(item),
+    })),
+    selectedItems.includes("__custom") && customItem
+      ? { id: "__custom", label: customItem, description: customItem, price: Math.max(0, Number(data.get("total")) || 0) }
+      : null,
+  ].filter(Boolean);
+  const discount = Math.max(0, Number(data.get("discount")) || 0);
+  const total = Math.max(0, Number(data.get("total")) || 0);
+  const existing = state.modal?.quoteId ? state.quotations.find((quote) => quote.id === state.modal.quoteId) : null;
+  const quote = existing || {
+    id: createId("q"),
+    number: nextDocumentNumber("QUO", state.quotations || [], "number", 1000),
+    createdDate: DEMO_TODAY,
+  };
+  Object.assign(quote, {
+    customerId: customer.id,
+    eventDate: String(data.get("eventName") || customer.event || "").trim(),
+    dueDate: String(data.get("due") || "2026-06-30"),
+    lines,
+    discount,
+    total,
+    status: quote.status === "Invoiced" ? "Invoiced" : "Quoted",
+    updated: DEMO_TODAY,
+  });
+  if (!existing) state.quotations.unshift(quote);
+  return quote;
 }
 
 function openStaffBookingForm() {
@@ -5182,8 +5424,35 @@ function updateOrderSelectionSummary() {
       ${customSelected ? `<div class="selection-line"><span>Custom order line</span><strong>Manual price</strong></div>` : ""}
     </div>
   `;
+  summary.querySelectorAll("[name^='itemDescription_']").forEach((field) => {
+    field.addEventListener("input", safeUpdateOrderInvoiceSummary);
+  });
   filterOrderItemPicker(document.querySelector("[data-order-item-search]")?.value || "");
-  updateOrderInvoiceSummary();
+  safeUpdateOrderInvoiceSummary();
+}
+
+function safeUpdateOrderSelectionSummary() {
+  try {
+    updateOrderSelectionSummary();
+  } catch (error) {
+    console.error("Order item summary update failed", error);
+  }
+}
+
+function safeUpdateOrderInvoiceSummary() {
+  try {
+    updateOrderInvoiceSummary();
+  } catch (error) {
+    console.error("Invoice summary update failed", error);
+  }
+}
+
+function safeFilterOrderItemPicker(query) {
+  try {
+    filterOrderItemPicker(query);
+  } catch (error) {
+    console.error("Order item search update failed", error);
+  }
 }
 
 function filterOrderItemPicker(query) {
@@ -5214,7 +5483,11 @@ function updateOrderInvoiceSummary() {
   const quoteInventory = document.querySelector("[data-quote-inventory]");
   const quoteDiscount = document.querySelector("[data-quote-discount]");
   const quoteTotal = document.querySelector("[data-quote-total]");
-  const quoteBalance = document.querySelector("[data-quote-balance]");
+  const quoteFooterTotal = document.querySelector("[data-quote-footer-total]");
+  const quoteCustomer = document.querySelector("[data-quote-customer]");
+  const quoteEvent = document.querySelector("[data-quote-event]");
+  const quoteDue = document.querySelector("[data-quote-due]");
+  const quoteLines = document.querySelector("[data-quote-lines]");
   const inventoryTotal = selectedOrderItemValues()
     .filter((value) => value !== "__custom")
     .map(selectedInventoryItem)
@@ -5226,18 +5499,52 @@ function updateOrderInvoiceSummary() {
   }
   const total = Math.max(0, Number(totalInput?.value || 0));
   const paid = Math.max(0, Number(paidInput?.value || 0));
+  const selectedItems = selectedOrderItemValues()
+    .filter((value) => value !== "__custom")
+    .map(selectedInventoryItem)
+    .filter(Boolean);
+  if (quoteLines) {
+    const loadedQuote = document.querySelector("[data-loaded-quote]")?.dataset.loadedQuote || "";
+    const savedLines = loadedQuote && selectedItems.length === 0
+      ? ((state.quotations || []).find((quote) => quote.id === loadedQuote)?.lines || [])
+      : [];
+    const displayLines = selectedItems.length
+      ? selectedItems
+          .map((item) => {
+            const description = document.getElementsByName(`itemDescription_${item.id}`)[0]?.value || item.description || inventoryOrderLabel(item);
+            return { label: inventoryOrderLabel(item), description, price: inventoryPrice(item) };
+          })
+      : savedLines;
+    quoteLines.innerHTML = displayLines.length
+      ? displayLines
+          .map((line) => `
+              <p>
+                <span>
+                  <strong class="quote-line-item">${escapeHtml(line.label)}</strong>
+                  <small>${escapeHtml(line.description || line.label)}</small>
+                </span>
+                <strong class="quote-line-price">${money(line.price || 0)}</strong>
+              </p>
+            `)
+          .join("")
+      : "<p>No items selected.</p>";
+  }
+  if (quoteCustomer) quoteCustomer.textContent = document.querySelector("#order-customer-name")?.value || "New customer";
+  if (quoteEvent) quoteEvent.textContent = document.querySelector("#order-event")?.value || "Not set";
+  if (quoteDue) quoteDue.textContent = formatDate(document.querySelector("#order-due")?.value || "2026-06-30");
   if (quoteInventory) quoteInventory.textContent = money(inventoryTotal);
   if (quoteDiscount) quoteDiscount.textContent = money(discount);
   if (quoteTotal) quoteTotal.textContent = money(total);
-  if (quoteBalance) quoteBalance.textContent = money(total);
+  if (quoteFooterTotal) quoteFooterTotal.textContent = money(total);
   if (amountDue) amountDue.textContent = money(Math.max(total - paid, 0));
 }
 
 function filterOrderStage(input) {
   const status = input?.dataset?.stageSearch || "";
+  const safeStatus = selectorEscape(status);
   const list =
-    input?.closest(".board-column, .modal-card, .panel")?.querySelector(`[data-stage-list="${CSS.escape(status)}"]`) ||
-    document.querySelector(`[data-stage-list="${CSS.escape(status)}"]`);
+    input?.closest(".board-column, .modal-card, .panel")?.querySelector(`[data-stage-list="${safeStatus}"]`) ||
+    document.querySelector(`[data-stage-list="${safeStatus}"]`);
   if (!list) return;
   const terms = String(input?.value || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
   let visibleCount = 0;
@@ -5273,37 +5580,7 @@ function toggleCustomOrderField(values) {
 function handleOrderSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
-  const selectedCustomerId = String(data.get("customerId"));
-  let customer = state.customers.find((item) => item.id === selectedCustomerId);
-  const name = String(data.get("name") || "").trim();
-  const phone = String(data.get("phone") || "").trim();
-  const email = String(data.get("email") || "").trim();
-  const eventName = String(data.get("eventName") || "").trim();
-  const address = String(data.get("address") || "").trim();
   const signatureName = String(data.get("signatureName") || "").trim();
-
-  if (!customer) {
-    customer = addCustomer({
-      name,
-      phone,
-      email: email || "Not provided",
-      address: address || "Not collected",
-      event: eventName || "New order",
-      notes: "Added while creating a new order.",
-    });
-  } else {
-    customer.name = name || customer.name;
-    customer.phone = phone || customer.phone;
-    customer.email = email || customer.email;
-    customer.address = address || customer.address;
-    customer.event = eventName || customer.event;
-    customer.lastVisit = "2026-05-01";
-  }
-  ["chest", "waist", "hips", "inseam", "sleeve", "neck", "shoulder", "height"].forEach((measure) => {
-    const value = String(data.get(measure) || "").trim();
-    if (value) customer.measurements[measure] = value;
-  });
-
   const discount = Math.max(0, Number(data.get("discount")) || 0);
   const total = Math.max(0, Number(data.get("total")) || 0);
   const paid = Math.min(total, Math.max(0, Number(data.get("paid")) || 0));
@@ -5319,6 +5596,10 @@ function handleOrderSubmit(event) {
     render();
     return;
   }
+  const customer = saveCustomerProfileFromOrderData(data);
+  const quote = customer ? saveQuotationFromOrderData(data, customer) : null;
+  if (!customer || !quote) return;
+  quote.status = "Invoiced";
   const inventoryItems = selectedItems.filter((value) => value !== "__custom").map(selectedInventoryItem).filter(Boolean);
   const hasCustomItem = selectedItems.includes("__custom") && customItem;
   const orderInventoryItems = inventoryItems.map((item) => ({
@@ -5340,6 +5621,7 @@ function handleOrderSubmit(event) {
     id: createId("o"),
     number: nextDocumentNumber("ORD", state.orders, "number", 1048),
     customerId: customer.id,
+    quotationId: quote.id,
     item: orderedItem || "New tux order",
     inventoryItemId: inventoryItems[0]?.id || "",
     inventoryItems: orderInventoryItems,
