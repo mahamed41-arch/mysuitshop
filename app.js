@@ -18,6 +18,7 @@ const STOCK_ALLOCATION_MONTHS = 3;
 const seedState = {
   currentView: "dashboard",
   selectedCustomerId: "c1",
+  customerProfileTab: "overview",
   search: "",
   calendarMode: "day",
   calendarDate: "2026-05-01",
@@ -691,6 +692,7 @@ function render() {
     try {
       bindEvents();
       centerActiveOrderStageTab();
+      centerActiveCustomerProfileTab();
       scheduleToastClear();
       startStickyClock();
     } catch (bindError) {
@@ -719,6 +721,15 @@ function render() {
 
 function centerActiveOrderStageTab() {
   const activeTab = document.querySelector(".order-stage-tabs button.active");
+  if (!activeTab) return;
+  const run = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+  run(() => {
+    activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  });
+}
+
+function centerActiveCustomerProfileTab() {
+  const activeTab = document.querySelector(".customer-profile-tabs button.active");
   if (!activeTab) return;
   const run = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
   run(() => {
@@ -1378,6 +1389,7 @@ function renderCustomerModal() {
   const orders = state.orders.filter((order) => order.customerId === customer.id);
   const invoices = state.invoices.filter((invoice) => invoice.customerId === customer.id);
   const quotations = customerQuotations(customer.id);
+  const activeTab = validCustomerProfileTab(state.customerProfileTab);
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="customer-order-title">
@@ -1387,7 +1399,10 @@ function renderCustomerModal() {
             <h3 id="customer-order-title" class="modal-title">${customer.name}</h3>
             <p class="panel-subtitle">${customer.event} • ${customer.phone} • ${customer.email}</p>
           </div>
-          <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+          <div class="row wrap">
+            <button class="ghost-button" data-action="book-selected" data-id="${customer.id}">${icon("calendar")} Book</button>
+            <button class="icon-button close-button" data-action="close-modal" title="Close" aria-label="Close popup">×</button>
+          </div>
         </div>
         <div class="three-column">
           <div class="item-card">
@@ -1403,34 +1418,153 @@ function renderCustomerModal() {
             <p class="stat-value small-date">${formatDate(customer.lastVisit)}</p>
           </div>
         </div>
-        ${renderCustomerTimeline(customer, { orders, invoices, quotations })}
-        ${renderCustomerPaymentSummary(orders, invoices)}
-        ${renderCustomerCommunicationHistory(customer, orders)}
-        <section class="modal-grid">
+        ${renderCustomerProfileTabs(activeTab, { orders, invoices, quotations })}
+        ${renderCustomerProfileTabContent(customer, activeTab, { orders, invoices, quotations })}
+      </section>
+    </div>
+  `;
+}
+
+function validCustomerProfileTab(tab) {
+  const tabs = ["overview", "measurements", "orders", "quotes", "communication", "timeline", "fitting"];
+  return tabs.includes(tab) ? tab : "overview";
+}
+
+function renderCustomerProfileTabs(activeTab, { orders = [], invoices = [], quotations = [] } = {}) {
+  const tabItems = [
+    { id: "overview", label: "Overview" },
+    { id: "measurements", label: "Measurements" },
+    { id: "orders", label: "Orders", count: orders.length },
+    { id: "quotes", label: "Quotes", count: quotations.length },
+    { id: "communication", label: "Comms" },
+    { id: "timeline", label: "Timeline" },
+    { id: "fitting", label: "Fitting" },
+  ];
+  return `
+    <div class="customer-profile-tabs" role="tablist" aria-label="Customer profile sections">
+      ${tabItems
+        .map(
+          (tab) => `
+            <button
+              type="button"
+              class="${tab.id === activeTab ? "active" : ""}"
+              role="tab"
+              aria-selected="${tab.id === activeTab}"
+              data-action="set-customer-tab"
+              data-id="${tab.id}"
+            >
+              ${tab.label}${typeof tab.count === "number" ? ` <span>${tab.count}</span>` : ""}
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderCustomerProfileTabContent(customer, activeTab, { orders = [], invoices = [], quotations = [] } = {}) {
+  if (activeTab === "measurements") {
+    return `
+      <section class="customer-profile-tab-panel" role="tabpanel">
+        <div>
+          <h4 class="panel-title">Measurements</h4>
+          <p class="panel-subtitle">Saved customer measurements for orders and future fittings.</p>
+        </div>
+        <div class="measurement-grid">
+          ${Object.entries(customer.measurements || {})
+            .map(
+              ([label, value]) => `
+                <div class="measure">
+                  <span>${titleCase(label)}</span>
+                  <strong>${value}</strong>
+                </div>
+              `,
+            )
+            .join("") || emptyState("No measurements saved yet.")}
+        </div>
+      </section>
+    `;
+  }
+
+  if (activeTab === "orders") {
+    return `
+      <section class="customer-profile-tab-panel" role="tabpanel">
+        <div class="row wrap modal-section-head flush">
           <div>
-            <div class="row wrap modal-section-head">
-              <h4 class="panel-title">Orders</h4>
-              <button class="ghost-button" data-action="new-order-for-customer" data-id="${customer.id}">${icon("plus")} New order</button>
-            </div>
+            <h4 class="panel-title">Orders and invoices</h4>
+            <p class="panel-subtitle">Active order work and the invoices linked to this customer.</p>
+          </div>
+          <button class="ghost-button" data-action="new-order-for-customer" data-id="${customer.id}">${icon("plus")} New order</button>
+        </div>
+        <div class="modal-grid">
+          <div>
+            <h4 class="panel-title small-heading">Orders</h4>
             <div class="list">
               ${orders.map((order) => orderCard(order, true, { expandable: true })).join("") || emptyState("No orders for this customer yet.")}
             </div>
           </div>
           <div>
-            <h4 class="panel-title modal-section-head">Invoices</h4>
+            <h4 class="panel-title small-heading">Invoices</h4>
             <div class="list">
               ${invoices.map((invoice) => invoiceCard(invoice)).join("") || emptyState("No invoices for this customer yet.")}
             </div>
           </div>
-          <div>
-            <h4 class="panel-title modal-section-head">Quotations</h4>
-            <div class="list">
-              ${quotations.map(quotationCard).join("") || emptyState("No saved quotations for this customer yet.")}
-            </div>
-          </div>
-        </section>
+        </div>
       </section>
-    </div>
+    `;
+  }
+
+  if (activeTab === "quotes") {
+    return `
+      <section class="customer-profile-tab-panel" role="tabpanel">
+        <div class="row wrap modal-section-head flush">
+          <div>
+            <h4 class="panel-title">Quotations</h4>
+            <p class="panel-subtitle">Saved quotes, including those that did not become orders yet.</p>
+          </div>
+          <button class="ghost-button" data-action="new-order-for-customer" data-id="${customer.id}">${icon("plus")} New quote</button>
+        </div>
+        <div class="list">
+          ${quotations.map(quotationCard).join("") || emptyState("No saved quotations for this customer yet.")}
+        </div>
+      </section>
+    `;
+  }
+
+  if (activeTab === "communication") {
+    return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerCommunicationHistory(customer, orders)}</section>`;
+  }
+
+  if (activeTab === "timeline") {
+    return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerTimeline(customer, { orders, invoices, quotations })}</section>`;
+  }
+
+  if (activeTab === "fitting") {
+    return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerFittings(customer, orders)}</section>`;
+  }
+
+  return `
+    <section class="customer-profile-tab-panel" role="tabpanel">
+      <div class="three-column">
+        <div class="item-card">
+          <p class="meta">Phone</p>
+          <p class="name">${customer.phone}</p>
+        </div>
+        <div class="item-card">
+          <p class="meta">Email</p>
+          <p class="name">${customer.email}</p>
+        </div>
+        <div class="item-card">
+          <p class="meta">Address</p>
+          <p class="name">${customer.address}</p>
+        </div>
+      </div>
+      ${renderCustomerPaymentSummary(orders, invoices)}
+      <section class="item-card customer-notes-card">
+        <h4 class="panel-title">Staff notes</h4>
+        <p class="page-copy">${customer.notes || "No staff notes yet."}</p>
+      </section>
+    </section>
   `;
 }
 
@@ -2160,7 +2294,6 @@ function renderAppointmentDetailModal() {
   const isSalesAppointment = /consultation|measurements/i.test(appt.type);
   const customerQuotes = customerQuotations(customer.id);
   const latestQuote = customerQuotes[0];
-  const customerOrders = state.orders.filter((order) => order.customerId === customer.id);
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card appointment-detail-modal" role="dialog" aria-modal="true" aria-labelledby="appointment-detail-title">
@@ -2192,34 +2325,24 @@ function renderAppointmentDetailModal() {
             <p class="panel-subtitle">Confirmation and reminder records for this appointment.</p>
           </div>
         </div>
-        <div class="communication-row appointment-detail-comms">
-          <span class="communication-status">
+        <div class="appointment-detail-comms">
+          <article class="appointment-comms-status-card">
             <span>Email + text confirmation</span>
-            <strong class="delivery-state ${confirmationDelivery.className}">${comms.confirmationStatus}</strong>
-          </span>
-          <span class="communication-status">
+            <strong class="delivery-state ${confirmationDelivery.className}">${confirmationDelivery.label}</strong>
+            <small>Sent ${formatDate(comms.confirmationDate)}</small>
+          </article>
+          <article class="appointment-comms-status-card">
             <span>Reminder</span>
-            <strong class="delivery-state ${reminderDelivery.className}">${comms.reminderStatus}</strong>
-            <small>${formatDate(comms.reminderDate)}</small>
-          </span>
+            <strong class="delivery-state ${reminderDelivery.className}">${reminderDelivery.label}</strong>
+            <small>${reminderDelivery.className === "sent" ? "Sent" : "Scheduled"} ${formatDate(comms.reminderDate)}</small>
+          </article>
         </div>
         ${
           isSalesAppointment
             ? `<div class="appointment-next-step">
-                <div class="appointment-workflow-strip">
-                  <span class="status ${appt.status === "Attended" ? "ready" : "partial"}">Attend</span>
-                  <span class="status ${latestQuote ? "ready" : "partial"}">Measure + quote</span>
-                  <span class="status ${customerOrders.length ? "ready" : "partial"}">Invoice + deposit</span>
-                </div>
-                <p class="meta">Use this appointment to decide the outcome: save a quote if they are considering it, create the invoice if they buy, or schedule follow-up if they do not buy today.</p>
                 <div class="appointment-actions">
                   <button class="ghost-button" data-action="no-sale-follow-up" data-id="${appt.id}">${icon("external")} No-sale follow-up</button>
-                  ${
-                    latestQuote && latestQuote.status !== "Invoiced"
-                      ? `<button class="ghost-button" data-action="convert-quote" data-id="${latestQuote.id}">${icon("invoice")} Convert saved quote</button>`
-                      : ""
-                  }
-                  <button class="button gold" data-action="sale-from-appointment" data-id="${appt.customerId}" data-appointment="${appt.id}">${icon("invoice")} Measure / quote</button>
+                  <button class="button gold" data-action="${latestQuote && latestQuote.status !== "Invoiced" ? "convert-quote" : "sale-from-appointment"}" data-id="${latestQuote && latestQuote.status !== "Invoiced" ? latestQuote.id : appt.customerId}" data-appointment="${appt.id}">${icon("invoice")} ${latestQuote && latestQuote.status !== "Invoiced" ? "Create invoice" : "Measure / quote"}</button>
                 </div>
               </div>`
             : ""
@@ -2585,106 +2708,35 @@ function renderCustomers() {
     const haystack = `${customer.name} ${customer.phone} ${customer.email} ${customer.event}`.toLowerCase();
     return haystack.includes(state.search.toLowerCase());
   });
-  const selected = state.customers.find((customer) => customer.id === state.selectedCustomerId) || filtered[0] || state.customers[0];
-  const orders = state.orders.filter((order) => order.customerId === selected.id);
-  const invoices = state.invoices.filter((invoice) => invoice.customerId === selected.id);
-  const quotations = customerQuotations(selected.id);
 
   return `
-    <section class="content-grid">
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <h3 class="panel-title">Customer list</h3>
-            <p class="panel-subtitle">Search by name, phone, email, or event. Tap a customer to open their orders.</p>
-          </div>
-        </div>
-        <div class="field">
-          <label for="customer-search">Search</label>
-          <input id="customer-search" data-input="customer-search" type="search" value="${escapeAttribute(state.search)}" placeholder="Search customers" />
-        </div>
-        <div class="customer-list list" style="margin-top: 12px;">
-          ${filtered
-            .map(
-              (customer) => `
-                <button class="customer-button ${customer.id === selected.id ? "active" : ""}" data-customer="${customer.id}">
-                  <span class="row">
-                    <strong>${customer.name}</strong>
-                    <span class="status ${statusClass(primaryOrderStatus(customer.id))}">${primaryOrderStatus(customer.id)}</span>
-                  </span>
-                  <span class="meta">${customer.event}</span>
-                  <span class="meta">${customer.phone}</span>
-                </button>
-              `,
-            )
-            .join("") || emptyState("No matching customers.")}
+    <section class="panel customer-directory-panel">
+      <div class="panel-header">
+        <div>
+          <h3 class="panel-title">Customers</h3>
+          <p class="panel-subtitle">Search by name, phone, email, or event. Tap a customer to open their profile.</p>
         </div>
       </div>
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <h3 class="panel-title">${selected.name}</h3>
-            <p class="panel-subtitle">${selected.event} • Last visit ${formatDate(selected.lastVisit)}</p>
-          </div>
-          <button class="ghost-button" data-action="book-selected" data-id="${selected.id}">${icon("calendar")} Book</button>
-        </div>
-        <div class="three-column">
-          <div class="item-card">
-            <p class="meta">Phone</p>
-            <p class="name">${selected.phone}</p>
-          </div>
-          <div class="item-card">
-            <p class="meta">Email</p>
-            <p class="name">${selected.email}</p>
-          </div>
-          <div class="item-card">
-            <p class="meta">Address</p>
-            <p class="name">${selected.address}</p>
-          </div>
-        </div>
-        <div class="divider"></div>
-        ${renderCustomerTimeline(selected, { orders, invoices, quotations })}
-        <div class="divider"></div>
-        ${renderCustomerPaymentSummary(orders, invoices)}
-        <div class="divider"></div>
-        <h3 class="panel-title">Measurements</h3>
-        <div class="measurement-grid" style="margin-top: 12px;">
-          ${Object.entries(selected.measurements)
-            .map(
-              ([label, value]) => `
-                <div class="measure">
-                  <span>${titleCase(label)}</span>
-                  <strong>${value}</strong>
-                </div>
-              `,
-            )
-            .join("")}
-        </div>
-        <div class="divider"></div>
-        <section class="two-column">
-          <div>
-            <h3 class="panel-title">Orders</h3>
-            <div class="list" style="margin-top: 10px;">
-              ${orders.map((order) => orderCard(order, true)).join("") || emptyState("No orders yet.")}
-            </div>
-          </div>
-          <div>
-            <h3 class="panel-title">Invoices</h3>
-            <div class="list" style="margin-top: 10px;">
-              ${invoices.map((invoice) => invoiceCard(invoice)).join("") || emptyState("No invoices yet.")}
-            </div>
-          </div>
-        </section>
-        <div class="divider"></div>
-        <h3 class="panel-title">Quotations</h3>
-        <div class="list" style="margin-top: 10px;">
-          ${quotations.map(quotationCard).join("") || emptyState("No saved quotations yet.")}
-        </div>
-        <div class="divider"></div>
-        ${renderCustomerFittings(selected, orders)}
-        <div class="divider"></div>
-        <h3 class="panel-title">Staff notes</h3>
-        <p class="page-copy">${selected.notes}</p>
+      <div class="field">
+        <label for="customer-search">Search</label>
+        <input id="customer-search" data-input="customer-search" type="search" value="${escapeAttribute(state.search)}" placeholder="Search customers" />
+      </div>
+      <div class="customer-list customer-directory-list list">
+        ${filtered
+          .map(
+            (customer) => `
+              <button class="customer-button" data-customer="${customer.id}">
+                <span class="row">
+                  <strong>${customer.name}</strong>
+                  <span class="status ${statusClass(primaryOrderStatus(customer.id))}">${primaryOrderStatus(customer.id)}</span>
+                </span>
+                <span class="meta">${customer.event} • Last visit ${formatDate(customer.lastVisit)}</span>
+                <span class="meta">${customer.phone}</span>
+                <span class="customer-open-hint">Open profile</span>
+              </button>
+            `,
+          )
+          .join("") || emptyState("No matching customers.")}
       </div>
     </section>
   `;
@@ -5135,6 +5187,7 @@ function groupedAppointmentAgenda(appointments) {
 function appointmentComms(appt) {
   return {
     confirmationStatus: appt.confirmationStatus || "Email + text sent",
+    confirmationDate: appt.confirmationDate || appt.createdDate || addDays(appt.date, -7),
     reminderStatus: appt.reminderStatus || "Scheduled",
     reminderDate: appt.reminderDate || dayBefore(appt.date),
   };
@@ -5426,6 +5479,7 @@ function handleAction(button) {
   if (action === "open-customer") {
     openCustomerDetail(id);
   }
+  if (action === "set-customer-tab") setCustomerTab(id);
   if (action === "book-selected") createBookingForCustomer(id);
   if (action === "send-reminder") sendAppointmentReminder(id);
   if (action === "no-sale-follow-up") scheduleNoSaleFollowUp(id);
@@ -5804,7 +5858,14 @@ function openCustomerDetail(customerId) {
   state.selectedCustomerId = customerId;
   const expandedOrderId = state.modal?.customerId === customerId ? state.modal.expandedOrderId || null : null;
   state.modal = { type: "customer", customerId, expandedOrderId };
+  state.customerProfileTab = "overview";
   state.toast = "";
+  saveState();
+  render();
+}
+
+function setCustomerTab(tab) {
+  state.customerProfileTab = validCustomerProfileTab(tab);
   saveState();
   render();
 }
