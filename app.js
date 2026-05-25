@@ -19,6 +19,14 @@ const seedState = {
   currentView: "dashboard",
   selectedCustomerId: "c1",
   customerProfileTab: "overview",
+  globalSearch: "",
+  publicBooking: {
+    step: 1,
+    type: "",
+    date: "2026-05-26",
+    time: "",
+    month: "2026-05-01",
+  },
   search: "",
   calendarMode: "day",
   calendarDate: "2026-05-01",
@@ -50,13 +58,14 @@ const seedState = {
   activeStaff: "",
   clockedInDate: "",
   staffClock: {
-    date: DEMO_TODAY,
+    date: businessToday(),
     senior: { name: "", time: "" },
     staff: { name: "", time: "" },
   },
   toast: "",
   modal: null,
   customComms: [],
+  activityLog: [],
   quotations: [],
   communicationTemplates: [
     {
@@ -525,6 +534,12 @@ function normaliseInventoryState(sourceState) {
     lines: Array.isArray(quote.lines) ? quote.lines : [],
     status: quote.status || "Quoted",
   }));
+  nextState.activityLog = Array.isArray(sourceState.activityLog) ? sourceState.activityLog : [];
+  nextState.globalSearch = sourceState.globalSearch || "";
+  nextState.publicBooking = {
+    ...cloneData(seedState.publicBooking),
+    ...(sourceState.publicBooking || {}),
+  };
   if (!sourceState.dashboardPriorityDemoSeeded && !nextState.orders.some((order) => order.fittingRecord?.priority)) {
     const demoPriorityOrder = nextState.orders.find((order) => order.id === "o3") || nextState.orders.find((order) => order.fittingDate);
     if (demoPriorityOrder) {
@@ -797,14 +812,16 @@ function currentMinutes(date = new Date()) {
 function isAppointmentPast(appt, date = new Date()) {
   const apptMinutes = minutesFromTime(appt?.time);
   if (apptMinutes === null) return false;
-  if (appt.date && appt.date < DEMO_TODAY) return true;
-  return appt.date === DEMO_TODAY && apptMinutes < currentMinutes(date);
+  const today = businessToday();
+  if (appt.date && appt.date < today) return true;
+  return appt.date === today && apptMinutes < currentMinutes(date);
 }
 
 function updatePastAppointmentCards(date = new Date()) {
+  const today = businessToday();
   document.querySelectorAll("[data-appointment-time][data-appointment-date]").forEach((card) => {
     const apptMinutes = minutesFromTime(card.dataset.appointmentTime);
-    const past = card.dataset.appointmentDate === DEMO_TODAY && apptMinutes !== null && apptMinutes < currentMinutes(date);
+    const past = card.dataset.appointmentDate === today && apptMinutes !== null && apptMinutes < currentMinutes(date);
     card.classList.toggle("appointment-past", past);
   });
 }
@@ -972,23 +989,126 @@ function renderTopbar() {
   const [title, copy] = titles[state.currentView] || titles.dashboard;
   return `
     <header class="topbar">
-      <div>
-        <p class="page-kicker">Men's formalwear operations</p>
-        <h2 class="page-title">${title}</h2>
-        <p class="page-copy">${copy}</p>
+      <div class="topbar-title">
+        <div>
+          <p class="page-kicker">Men's formalwear operations</p>
+          <h2 class="page-title">${title}</h2>
+          <p class="page-copy">${copy}</p>
+        </div>
       </div>
-      <div class="sticky-datetime" aria-live="polite">
-        <span data-live-date>${liveDateLabel()}</span>
-        <strong data-live-time>${liveTimeLabel()}</strong>
-      </div>
-      <div class="top-actions">
-        ${isAdminUser() ? `<button class="ghost-button" data-action="reset">${icon("refresh")} Reset demo</button>` : ""}
-        <button class="ghost-button top-booking-button" data-action="new-staff-booking">${icon("calendar")} New booking</button>
-        <button class="button gold" data-action="new-order">${icon("plus")} New order</button>
-        <button class="ghost-button" data-action="sign-out">${icon("external")} Sign out</button>
+      <div class="topbar-command-row">
+        <button class="ghost-button home-button ${state.currentView === "dashboard" ? "active" : ""}" data-view="dashboard">${icon("dashboard")} Home</button>
+        <div class="sticky-datetime" aria-live="polite">
+          <span data-live-date>${liveDateLabel()}</span>
+          <strong data-live-time>${liveTimeLabel()}</strong>
+        </div>
+        ${renderGlobalSearch()}
+        <div class="top-actions">
+          ${isAdminUser() ? `<button class="ghost-button" data-action="reset">${icon("refresh")} Reset demo</button>` : ""}
+          <button class="ghost-button top-booking-button" data-action="new-staff-booking">${icon("calendar")} New booking</button>
+          <button class="button gold" data-action="new-order">${icon("plus")} New order</button>
+          <button class="ghost-button" data-action="sign-out">${icon("external")} Sign out</button>
+        </div>
       </div>
     </header>
   `;
+}
+
+function renderGlobalSearch() {
+  const query = String(state.globalSearch || "").trim();
+  const results = query ? globalSearchResults(query).slice(0, 6) : [];
+  return `
+    <div class="global-search">
+      <label for="global-search-input" class="visually-hidden">Search customers, orders, quotes, invoices</label>
+      <input id="global-search-input" data-global-search type="search" value="${escapeAttribute(state.globalSearch || "")}" placeholder="Search name, phone, order..." autocomplete="off" />
+      ${
+        query
+          ? `<div class="global-search-results">
+              ${
+                results
+                  .map(
+                    (result) => `
+                      <button type="button" data-action="${result.action}" data-id="${escapeAttribute(result.id)}">
+                        <span>
+                          <strong>${escapeHtml(result.title)}</strong>
+                          <small>${escapeHtml(result.detail)}</small>
+                        </span>
+                        <em>${escapeHtml(result.type)}</em>
+                      </button>
+                    `,
+                  )
+                  .join("") || `<p class="empty-state">No matches found.</p>`
+              }
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function globalSearchResults(query) {
+  const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const matches = (text) => terms.every((term) => String(text || "").toLowerCase().includes(term));
+  const customers = state.customers
+    .filter((customer) => matches(`${customer.name} ${customer.phone} ${customer.email} ${customer.event}`))
+    .map((customer) => ({
+      type: "Customer",
+      title: customer.name,
+      detail: `${customer.phone} • ${customer.event}`,
+      action: "open-customer",
+      id: customer.id,
+      score: 1,
+    }));
+  const orders = state.orders
+    .filter((order) => {
+      const customer = getCustomer(order.customerId);
+      return matches(`${order.number} ${order.item} ${order.status} ${order.due} ${customer.name} ${customer.phone}`);
+    })
+    .map((order) => {
+      const customer = getCustomer(order.customerId);
+      return {
+        type: "Order",
+        title: `${order.number} • ${customer.name}`,
+        detail: `${order.status} • Due ${formatDate(order.due)}`,
+        action: "open-order-detail",
+        id: order.id,
+        score: 2,
+      };
+    });
+  const quotes = (state.quotations || [])
+    .filter((quote) => {
+      const customer = getCustomer(quote.customerId);
+      return matches(`${quote.number} ${quote.status} ${quote.eventDate} ${customer.name} ${customer.phone}`);
+    })
+    .map((quote) => {
+      const customer = getCustomer(quote.customerId);
+      return {
+        type: "Quote",
+        title: `${quote.number} • ${customer.name}`,
+        detail: `${quote.status} • ${money(quote.total || 0)}`,
+        action: "open-customer",
+        id: quote.customerId,
+        score: 3,
+      };
+    });
+  const invoices = state.invoices
+    .filter((invoice) => {
+      const customer = getCustomer(invoice.customerId);
+      return matches(`${invoice.number} ${invoice.method} ${invoice.dueDate} ${customer.name} ${customer.phone}`);
+    })
+    .map((invoice) => {
+      const customer = getCustomer(invoice.customerId);
+      return {
+        type: "Invoice",
+        title: `${invoice.number} • ${customer.name}`,
+        detail: `${money(Math.max(invoice.total - invoice.paid, 0))} due • ${formatDate(invoice.dueDate)}`,
+        action: "open-customer",
+        id: invoice.customerId,
+        score: 4,
+      };
+    });
+  return [...customers, ...orders, ...quotes, ...invoices].sort((a, b) => a.score - b.score || a.title.localeCompare(b.title));
 }
 
 function renderStaffClockIn() {
@@ -1426,7 +1546,7 @@ function renderCustomerModal() {
 }
 
 function validCustomerProfileTab(tab) {
-  const tabs = ["overview", "measurements", "orders", "quotes", "communication", "timeline", "fitting"];
+  const tabs = ["overview", "measurements", "orders", "quotes", "communication", "activity", "timeline", "fitting"];
   return tabs.includes(tab) ? tab : "overview";
 }
 
@@ -1437,6 +1557,7 @@ function renderCustomerProfileTabs(activeTab, { orders = [], invoices = [], quot
     { id: "orders", label: "Orders", count: orders.length },
     { id: "quotes", label: "Quotes", count: quotations.length },
     { id: "communication", label: "Comms" },
+    { id: "activity", label: "Activity" },
     { id: "timeline", label: "Timeline" },
     { id: "fitting", label: "Fitting" },
   ];
@@ -1535,6 +1656,10 @@ function renderCustomerProfileTabContent(customer, activeTab, { orders = [], inv
     return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerCommunicationHistory(customer, orders)}</section>`;
   }
 
+  if (activeTab === "activity") {
+    return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerActivity(customer)}</section>`;
+  }
+
   if (activeTab === "timeline") {
     return `<section class="customer-profile-tab-panel" role="tabpanel">${renderCustomerTimeline(customer, { orders, invoices, quotations })}</section>`;
   }
@@ -1566,6 +1691,62 @@ function renderCustomerProfileTabContent(customer, activeTab, { orders = [], inv
       </section>
     </section>
   `;
+}
+
+function renderCustomerActivity(customer) {
+  const items = customerActivityItems(customer.id);
+  return `
+    <section class="customer-activity">
+      <div class="row wrap modal-section-head flush">
+        <div>
+          <h4 class="panel-title">Activity log</h4>
+          <p class="panel-subtitle">Operational changes recorded against this customer file.</p>
+        </div>
+      </div>
+      <div class="timeline-list">
+        ${
+          items
+            .map(
+              (item) => `
+                <article class="timeline-item">
+                  <span class="status partial">${escapeHtml(item.type)}</span>
+                  <div>
+                    <p class="name">${escapeHtml(item.title)}</p>
+                    <p class="meta">${escapeHtml(item.detail)}</p>
+                    <p class="meta">${formatDate(item.date)}${item.staff ? ` • ${escapeHtml(item.staff)}` : ""}</p>
+                  </div>
+                </article>
+              `,
+            )
+            .join("") || emptyState("No activity recorded yet.")
+        }
+      </div>
+    </section>
+  `;
+}
+
+function customerActivityItems(customerId) {
+  const explicit = (state.activityLog || [])
+    .filter((entry) => entry.customerId === customerId)
+    .map((entry) => ({
+      type: entry.type || "Activity",
+      title: entry.title || "Activity recorded",
+      detail: entry.detail || "",
+      date: entry.date || DEMO_TODAY,
+      staff: entry.staff || "",
+    }));
+  const communications = (state.customComms || [])
+    .filter((entry) => entry.customerId === customerId)
+    .map((entry) => ({
+      type: "Comms",
+      title: entry.title,
+      detail: entry.message,
+      date: entry.date,
+      staff: entry.staff,
+    }));
+  return [...explicit, ...communications]
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, 20);
 }
 
 function renderCustomerCommunicationHistory(customer, orders) {
@@ -2098,7 +2279,8 @@ function renderInventoryModal() {
 
 function renderDashboardMetricModal() {
   const metric = state.modal.metric;
-  const todaysAppointments = state.appointments.filter((appt) => appt.date === DEMO_TODAY);
+  const today = businessToday();
+  const todaysAppointments = state.appointments.filter((appt) => appt.date === today);
   const activeOrders = state.orders.filter((order) => !["Collected", "Cancelled"].includes(order.status)).sort(sortByClosestDueDate);
   const missingOrders = priorityMissingOrders();
   const dueSoonOrders = upcomingOrdersDueSoon();
@@ -2133,7 +2315,7 @@ function renderDashboardMetricModal() {
     dueSoon: {
       kicker: "Due in 2 weeks",
       title: `${dueSoonOrders.length} order${dueSoonOrders.length === 1 ? "" : "s"} due soon`,
-      subtitle: `Orders due from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, 14))}.`,
+      subtitle: `Orders due from ${formatDate(today)} to ${formatDate(addDays(today, 14))}.`,
       actionView: "orders",
       actionLabel: "Open orders",
       body: dueSoonOrders.map((order) => orderCard(order, true, { expandable: true, compactCollapsed: true })).join("") || emptyState("No orders due in the next 2 weeks."),
@@ -2221,7 +2403,7 @@ function dashboardAttentionCategory(category) {
     },
     "due-soon": {
       title: `Due in 2 weeks (${dueSoonOrders.length})`,
-      subtitle: `Orders due from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, 14))}.`,
+      subtitle: `Orders due from ${formatDate(businessToday())} to ${formatDate(addDays(businessToday(), 14))}.`,
       actionView: "orders",
       actionLabel: "Open orders",
       empty: "No orders due in the next 2 weeks.",
@@ -2246,7 +2428,7 @@ function dashboardAttentionCategory(category) {
 
 function dashboardFittingPaymentOrders() {
   return state.orders
-    .filter((order) => order.fittingDate && order.fittingDate >= DEMO_TODAY && Math.max(Math.ceil(order.total / 2) - order.paid, 0) > 0)
+    .filter((order) => order.fittingDate && order.fittingDate >= businessToday() && Math.max(Math.ceil(order.total / 2) - order.paid, 0) > 0)
     .sort((a, b) => `${a.fittingDate} ${a.fittingTime || ""}`.localeCompare(`${b.fittingDate} ${b.fittingTime || ""}`));
 }
 
@@ -2294,6 +2476,7 @@ function renderAppointmentDetailModal() {
   const isSalesAppointment = /consultation|measurements/i.test(appt.type);
   const customerQuotes = customerQuotations(customer.id);
   const latestQuote = customerQuotes[0];
+  const statusMeta = appointmentStatusMeta(appt.status);
   return `
     <div class="modal-backdrop" role="presentation" data-action="close-modal">
       <section class="modal-card appointment-detail-modal" role="dialog" aria-modal="true" aria-labelledby="appointment-detail-title">
@@ -2311,12 +2494,26 @@ function renderAppointmentDetailModal() {
             <p><span>Phone</span><strong>${customer.phone}</strong></p>
             <p><span>Email</span><strong>${customer.email}</strong></p>
             <p><span>Event</span><strong>${customer.event}</strong></p>
-            <p><span>Status</span><strong>${appt.status}</strong></p>
+            <p>
+              <span>Status</span>
+              <strong class="appointment-status-text ${statusMeta.className}">
+                ${statusMeta.mark ? `<span class="appointment-status-mark">${statusMeta.mark}</span>` : ""}
+                ${appt.status}
+              </strong>
+            </p>
           </div>
           <div class="appointment-note-box">
             <span>Appointment notes</span>
             <p>${escapeHtml(appt.notes || "No appointment notes added.")}</p>
           </div>
+        </div>
+        <div class="appointment-status-control">
+          <label for="appointment-detail-status-${appt.id}">Change appointment status</label>
+          <select id="appointment-detail-status-${appt.id}" class="appointment-status-select wide" data-appointment-status="${appt.id}">
+            ${appointmentStatuses()
+              .map((status) => `<option ${status === appt.status ? "selected" : ""}>${status}</option>`)
+              .join("")}
+          </select>
         </div>
         <div class="divider"></div>
         <div class="panel-header compact-modal-header">
@@ -2353,26 +2550,41 @@ function renderAppointmentDetailModal() {
 }
 
 function renderDashboard() {
-  const todaysAppointments = state.appointments.filter((appt) => appt.date === DEMO_TODAY).sort((a, b) => a.time.localeCompare(b.time));
+  const today = businessToday();
+  const todaysAppointments = state.appointments.filter((appt) => appt.date === today).sort((a, b) => a.time.localeCompare(b.time));
   const missingOrders = priorityMissingOrders();
   const closestMissingOrder = missingOrders[0];
   const dueSoonOrders = upcomingOrdersDueSoon();
   const lowStock = state.inventory.filter((item) => item.qty <= item.alert);
   const priorityNotes = dashboardPriorityNotes();
   const attentionItems = dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, lowStock });
+  const seniorAccess = isAdminUser();
+  const tasks = nextActionQueue({ seniorAccess }).slice(0, seniorAccess ? 8 : 5);
 
   return `
+    <section class="panel task-queue-panel ${seniorAccess ? "senior-task-queue" : "staff-task-queue"}">
+      <div class="panel-header">
+        <div>
+          <h3 class="panel-title">${seniorAccess ? "Senior next actions" : "My next actions"}</h3>
+          <p class="panel-subtitle">${seniorAccess ? "Appointments plus finance, stock, allocation, and operational priorities for the shop." : "Appointment and customer tasks staff can act on today."}</p>
+        </div>
+        <span class="status paid">${tasks.length} live</span>
+      </div>
+      <div class="task-queue-list">
+        ${tasks.map(taskQueueCard).join("") || emptyState("No next actions right now.")}
+      </div>
+    </section>
     <section class="dashboard-main-grid" id="today-bookings">
       <div class="panel dashboard-bookings-panel">
         <div class="panel-header">
           <div>
             <h3 class="panel-title">${todaysAppointments.length} booking${todaysAppointments.length === 1 ? "" : "s"} today</h3>
-            <p class="panel-subtitle">Tap a booking to see appointment details and communication history.</p>
+            <p class="panel-subtitle">${todaysAppointments.length ? `Today is ${formatDate(today)}. Tap a booking to see appointment details and communication history.` : `No bookings for ${formatDate(today)}.`}</p>
           </div>
           <button class="ghost-button" data-view="bookings">${icon("calendar")} Open calendar</button>
         </div>
         <div class="dashboard-appointment-list">
-          ${todaysAppointments.map(dashboardAppointmentCard).join("") || emptyState("No appointments today.")}
+          ${todaysAppointments.map(dashboardAppointmentCard).join("") || emptyState(`No bookings scheduled for ${formatDate(today)}.`)}
         </div>
       </div>
       <div class="panel dashboard-attention-panel">
@@ -2387,6 +2599,142 @@ function renderDashboard() {
         </div>
       </div>
     </section>
+  `;
+}
+
+function nextActionQueue({ seniorAccess = isAdminUser() } = {}) {
+  const today = businessToday();
+  const appointmentTasks = state.appointments
+    .filter((appt) => appt.date === today && !["Cancelled", "No show"].includes(appt.status))
+    .map((appt) => {
+      const customer = getCustomer(appt.customerId);
+      const past = isAppointmentPast(appt);
+      if (appt.status === "Attended") return null;
+      return {
+        priority: past ? 1 : 3,
+        type: "Appointment",
+        title: past ? `Record outcome for ${appt.name}` : `${appt.time} ${appt.name}`,
+        detail: past ? `${appt.type} has passed. Mark no-sale or create quote.` : `${appt.type} with ${appt.staff}`,
+        action: "open-appointment-detail",
+        id: appt.id,
+        customerId: customer.id,
+        audience: "staff",
+      };
+    })
+    .filter(Boolean);
+  const quoteTasks = (state.quotations || [])
+    .filter((quote) => quote.status === "Quoted")
+    .map((quote) => {
+      const customer = getCustomer(quote.customerId);
+      return {
+        priority: 4,
+        type: "Quote",
+        title: `Follow up ${quote.number}`,
+        detail: `${customer.name} • ${money(quote.total || 0)} quote saved`,
+        action: "open-customer",
+        id: customer.id,
+        audience: "staff",
+      };
+    });
+  const paymentTasks = dashboardFittingPaymentOrders().map((order) => {
+    const customer = getCustomer(order.customerId);
+    const target = Math.ceil(Number(order.total || 0) * (Number(appSetting("fittingPaymentTarget", 50)) / 100));
+    const remaining = Math.max(target - Number(order.paid || 0), 0);
+    return {
+      priority: 2,
+      type: "Deposit",
+      title: `Take deposit from ${customer.name}`,
+      detail: `Fitting ${formatDate(order.fittingDate)}${order.fittingTime ? ` at ${order.fittingTime}` : ""}. Paid ${money(order.paid)} / ${money(order.total)}. Needs ${money(remaining)} to reach ${appSetting("fittingPaymentTarget", 50)}%.`,
+      action: "open-order-detail",
+      id: order.id,
+      audience: "senior",
+    };
+  });
+  const missingTasks = priorityMissingOrders().map((order) => {
+    const customer = getCustomer(order.customerId);
+    return {
+      priority: 1,
+      type: "Stock",
+      title: `Resolve missing stock`,
+      detail: `${order.number} • ${customer.name} • Due ${formatDate(order.due)}`,
+      action: "open-order-detail",
+      id: order.id,
+      audience: "senior",
+    };
+  });
+  const lowStockTasks = state.inventory
+    .filter((item) => item.qty <= item.alert)
+    .sort((a, b) => inventoryAvailable(a) - inventoryAvailable(b))
+    .map((item) => ({
+      priority: 1.5,
+      type: "Stock",
+      title: `Low stock: ${inventoryParentName(item)}`,
+      detail: `${inventoryVariationLabel(item)}${item.color ? ` • ${item.color}` : ""} • ${inventoryAvailable(item)} available`,
+      action: "open-dashboard-attention",
+      id: "low-stock",
+      audience: "senior",
+    }));
+  const overdueInvoiceTasks = state.invoices
+    .filter((invoice) => invoice.total > invoice.paid && invoice.dueDate < today)
+    .map((invoice) => {
+      const customer = getCustomer(invoice.customerId);
+      return {
+        priority: 1.7,
+        type: "Finance",
+        title: `Overdue balance: ${customer.name}`,
+        detail: `${invoice.number} has ${money(invoice.total - invoice.paid)} overdue`,
+        action: "open-customer",
+        id: customer.id,
+        audience: "senior",
+      };
+    });
+  const unprocessedTasks = state.orders
+    .filter((order) => order.status === "Unprocessed")
+    .sort(sortByClosestDueDate)
+    .slice(0, 3)
+    .map((order) => {
+      const customer = getCustomer(order.customerId);
+      return {
+        priority: 3.5,
+        type: "Allocation",
+        title: `Review allocation for ${customer.name}`,
+        detail: `${order.number} • Due ${formatDate(order.due)} • ${order.stockStatus || "Pending"}`,
+        action: "open-order-detail",
+        id: order.id,
+        audience: "senior",
+      };
+    });
+  const collectionTasks = state.orders
+    .filter((order) => order.status === "Ready for collection" && !order.collectionDate)
+    .map((order) => {
+      const customer = getCustomer(order.customerId);
+      return {
+        priority: 3,
+        type: "Collection",
+        title: `Book collection for ${customer.name}`,
+        detail: `${order.number} is ready for collection`,
+        action: "open-order-detail",
+        id: order.id,
+        audience: "staff",
+      };
+    });
+  const tasks = seniorAccess
+    ? [...missingTasks, ...lowStockTasks, ...overdueInvoiceTasks, ...paymentTasks, ...appointmentTasks, ...collectionTasks, ...unprocessedTasks, ...quoteTasks]
+    : [...appointmentTasks, ...collectionTasks, ...quoteTasks];
+  return tasks
+    .sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title));
+}
+
+function taskQueueCard(task) {
+  return `
+    <button class="task-card ${task.audience === "senior" ? "senior-task" : "staff-task"}" type="button" data-action="${task.action}" data-id="${escapeAttribute(task.id)}">
+      <span class="task-type">${escapeHtml(task.type)}</span>
+      <span>
+        <strong>${escapeHtml(task.title)}</strong>
+        <small>${escapeHtml(task.detail)}</small>
+      </span>
+      <b>${icon("external")}</b>
+    </button>
   `;
 }
 
@@ -2437,7 +2785,7 @@ function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, 
       ? {
           label: "Overdue deposits",
           value: fittingPayments.length,
-          note: `${getCustomer(fittingPayments[0].customerId).name} needs ${money(Math.max(Math.ceil(fittingPayments[0].total / 2) - fittingPayments[0].paid, 0))} to reach 50%`,
+          note: depositAttentionNote(fittingPayments[0]),
           category: "fitting-payment",
         }
       : null,
@@ -2466,6 +2814,14 @@ function dashboardAttentionItems({ missingOrders, dueSoonOrders, priorityNotes, 
         }
       : null,
   ].filter(Boolean);
+}
+
+function depositAttentionNote(order) {
+  const customer = getCustomer(order.customerId);
+  const targetPercent = Number(appSetting("fittingPaymentTarget", 50));
+  const target = Math.ceil(Number(order.total || 0) * (targetPercent / 100));
+  const remaining = Math.max(target - Number(order.paid || 0), 0);
+  return `${customer.name} • fitting ${formatDate(order.fittingDate)}${order.fittingTime ? ` ${order.fittingTime}` : ""} • ${money(remaining)} to reach ${targetPercent}%`;
 }
 
 function closestLowStockNote(items) {
@@ -2498,7 +2854,7 @@ function dashboardPriorityNotes() {
 }
 
 function dashboardUpcomingWeekLabel() {
-  const dates = weekDates(DEMO_TODAY);
+  const dates = weekDates(businessToday());
   return `${formatDate(dates[0])} to ${formatDate(dates[6])}`;
 }
 
@@ -2513,7 +2869,7 @@ function priorityMissingOrders() {
 }
 
 function dashboardUpcomingOrders() {
-  const [weekStart, , , , , , weekEnd] = weekDates(DEMO_TODAY);
+  const [weekStart, , , , , , weekEnd] = weekDates(businessToday());
   return state.orders
     .filter((order) => {
       if (["Collected", "Cancelled"].includes(order.status)) return false;
@@ -2525,7 +2881,7 @@ function dashboardUpcomingOrders() {
 }
 
 function dashboardUpcomingDate(order) {
-  const [weekStart, , , , , , weekEnd] = weekDates(DEMO_TODAY);
+  const [weekStart, , , , , , weekEnd] = weekDates(businessToday());
   const dates = [order.due, order.fittingDate].filter((date) => date && date >= weekStart && date <= weekEnd);
   return dates.sort()[0] || order.due || order.fittingDate || "9999-12-31";
 }
@@ -2537,20 +2893,21 @@ function sortByDashboardUpcomingDate(a, b) {
 }
 
 function upcomingOrdersDueSoon() {
-  const dueBy = addDays(DEMO_TODAY, 14);
+  const today = businessToday();
+  const dueBy = addDays(today, 14);
   return state.orders
     .filter(
       (order) =>
         !["Collected", "Cancelled"].includes(order.status) &&
         order.due &&
-        order.due >= DEMO_TODAY &&
+        order.due >= today &&
         order.due <= dueBy,
     )
     .sort(sortByClosestDueDate);
 }
 
 function renderBookings() {
-  const calendarDate = state.calendarDate || "2026-05-01";
+  const calendarDate = state.calendarDate && state.calendarDate !== DEMO_TODAY ? state.calendarDate : businessToday();
   const calendarMode = state.calendarMode || "day";
   const visibleAppointments = appointmentsForCalendar(calendarDate, calendarMode);
   return `
@@ -3000,13 +3357,14 @@ function ordersForPeriod(period = "all") {
 function orderInPeriod(order, period = "all") {
   if (period === "all") return true;
   const due = order.due || "";
+  const today = businessToday();
   if (!due) return false;
   if (period === "week") {
-    const dates = weekDates(DEMO_TODAY);
+    const dates = weekDates(today);
     return due >= dates[0] && due <= dates[6];
   }
-  if (period === "month") return due.slice(0, 7) === DEMO_TODAY.slice(0, 7);
-  if (period === "year") return due.slice(0, 4) === DEMO_TODAY.slice(0, 4);
+  if (period === "month") return due.slice(0, 7) === today.slice(0, 7);
+  if (period === "year") return due.slice(0, 4) === today.slice(0, 4);
   return true;
 }
 
@@ -3020,12 +3378,13 @@ function orderPeriodTabLabel(period) {
 }
 
 function orderPeriodLabel(period) {
+  const today = businessToday();
   if (period === "week") {
-    const dates = weekDates(DEMO_TODAY);
+    const dates = weekDates(today);
     return `${formatDate(dates[0])} to ${formatDate(dates[6])}`;
   }
-  if (period === "month") return monthLabel(DEMO_TODAY.slice(0, 7));
-  if (period === "year") return DEMO_TODAY.slice(0, 4);
+  if (period === "month") return monthLabel(today.slice(0, 7));
+  if (period === "year") return today.slice(0, 4);
   return "all due dates";
 }
 
@@ -3101,7 +3460,7 @@ function orderStageConfig(status) {
 function orderOverdueMeta(order) {
   const config = orderStageConfig(order.status);
   const dateValue = order[config.overdueDate] || "";
-  if (!dateValue || dateValue >= DEMO_TODAY) return null;
+  if (!dateValue || dateValue >= businessToday()) return null;
   return {
     label: config.overdueLabel || "Overdue",
     date: dateValue,
@@ -3710,7 +4069,7 @@ function inventoryGroupName(item) {
 
 function renderRota() {
   const clock = dailyStaffClock();
-  const todaysAppointments = state.appointments.filter((appointment) => appointment.date === DEMO_TODAY);
+  const todaysAppointments = state.appointments.filter((appointment) => appointment.date === businessToday());
   const assignedToSenior = todaysAppointments.filter((appointment) => appointment.staff === clock.senior.name);
   const staffMetrics = staffPerformanceMetrics(clock, todaysAppointments);
   const totalSales = staffMetrics.reduce((sum, staff) => sum + staff.salesCount, 0);
@@ -4114,6 +4473,24 @@ function renderSettings() {
       <section class="panel settings-panel">
         <div class="panel-header">
           <div>
+            <h3 class="panel-title">Data backup</h3>
+            <p class="panel-subtitle">Export this browser's prototype data or import a saved backup.</p>
+          </div>
+        </div>
+        <div class="settings-summary-list">
+          <div><strong>Export</strong><span>Downloads customers, orders, quotes, invoices, stock, communications, staff, and settings as one JSON file.</span></div>
+          <div><strong>Import</strong><span>Replaces the current local demo data with a previously exported backup.</span></div>
+        </div>
+        <div class="form-actions data-tools-actions">
+          <button class="ghost-button" type="button" data-action="export-data">${icon("external")} Export data</button>
+          <label class="ghost-button import-data-button" for="settings-import-data">${icon("plus")} Import backup</label>
+          <input id="settings-import-data" data-import-data type="file" accept="application/json,.json" hidden />
+        </div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
             <h3 class="panel-title">Communication defaults</h3>
             <p class="panel-subtitle">Useful admin checks for confirmations, reminders, and follow-ups.</p>
           </div>
@@ -4343,38 +4720,247 @@ function renderFinanceAccessGate() {
 }
 
 function renderBookingPortal() {
+  const booking = publicBookingState();
   return `
-    <div class="public-shell">
-      <div class="public-layout">
-        <section class="public-hero">
-          <div>
-            <button class="ghost-button" data-view="dashboard">${icon("back")} Staff app</button>
-            <h1>Book your formalwear appointment.</h1>
-            <p>Customers can request a consultation, fitting, alteration check, or collection slot. Staff keep the full CRM, orders, invoices, and stock tools private.</p>
-          </div>
-          <div class="public-bullets">
-            <div><strong>Consultation</strong><br><span>Choose tux style, event needs, and timeline.</span></div>
-            <div><strong>Measurements</strong><br><span>Save fitting details to your customer profile.</span></div>
-            <div><strong>Reminders</strong><br><span>Confirmation now, reminder the day before.</span></div>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">Request a booking</h2>
-              <p class="panel-subtitle">This is the customer-only screen for the first prototype.</p>
-            </div>
-          </div>
-          ${bookingForm("public-booking-form", true)}
-        </section>
-      </div>
+    <div class="public-shell booking-flow-shell" style="${brandStyleVars()}">
+      <header class="public-booking-header">
+        <button class="public-back-button" type="button" data-action="public-back">${icon("back")}</button>
+        <strong>${booking.step}/3</strong>
+        <h1>${publicBookingStepTitle(booking.step)}</h1>
+        <button class="public-signin-button" type="button" data-view="dashboard">Sign in</button>
+      </header>
+      <main class="public-booking-main">
+        ${booking.step === 1 ? renderPublicServiceStep(booking) : ""}
+        ${booking.step === 2 ? renderPublicDateTimeStep(booking) : ""}
+        ${booking.step === 3 ? renderPublicDetailsStep(booking) : ""}
+      </main>
+      ${renderPublicBookingFooter(booking)}
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
     </div>
   `;
 }
 
+function publicBookingState() {
+  const booking = {
+    ...cloneData(seedState.publicBooking),
+    ...(state.publicBooking || {}),
+  };
+  const start = publicBookingStartDate();
+  booking.step = Math.min(3, Math.max(1, Number(booking.step || 1)));
+  if (!booking.date || booking.date < start) booking.date = start;
+  booking.month = booking.month || monthKey(booking.date || "2026-05-26") + "-01";
+  return booking;
+}
+
+function publicBookingStepTitle(step) {
+  if (step === 1) return "Select services";
+  if (step === 2) return "Select date & time";
+  return "Enter your details";
+}
+
+function publicBookingServices() {
+  return [
+    {
+      id: "Wedding consultation",
+      title: "Request an In-Store Consultation",
+      badge: "Approval Required",
+      description: "An in-store experience, try on styles, and discuss creating your perfect custom-made suit.",
+      duration: "30 min",
+      price: "£0",
+    },
+  ];
+}
+
+function renderPublicServiceStep(booking) {
+  return `
+    <section class="public-step">
+      <h2>All services</h2>
+      <div class="public-service-list">
+        ${publicBookingServices()
+          .map(
+            (service) => `
+              <button class="public-service-card ${booking.type === service.id ? "selected" : ""}" type="button" data-action="public-select-service" data-id="${escapeAttribute(service.id)}">
+                <span>
+                  <strong>${service.title}<br>(${service.badge})</strong>
+                  <small>${service.description}</small>
+                  <em>${service.duration} | ${service.price}</em>
+                </span>
+                <b>${booking.type === service.id ? "Selected" : "Select"}</b>
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderPublicDateTimeStep(booking) {
+  const monthDate = booking.month || `${monthKey(booking.date)}-01`;
+  const selectedDate = booking.date || "2026-05-26";
+  const availableTimes = bookingSlotTimes().filter((time) => isSlotAvailable(selectedDate, time));
+  const morningTimes = availableTimes.filter((time) => Number(time.slice(0, 2)) < 12);
+  const afternoonTimes = availableTimes.filter((time) => Number(time.slice(0, 2)) >= 12);
+  return `
+    <section class="public-step public-calendar-step">
+      <div class="public-month-head">
+        <h2>${monthLabel(monthKey(monthDate))}</h2>
+        <div>
+          <button class="public-month-button" type="button" data-action="public-month-prev">${icon("back")}</button>
+          <button class="public-month-button next" type="button" data-action="public-month-next">${icon("back")}</button>
+        </div>
+      </div>
+      ${renderPublicBookingCalendar(monthDate, selectedDate)}
+      <h3>Available on ${publicFullDate(selectedDate)} (BST)</h3>
+      <div class="public-time-grid">
+        <section>
+          <h4>Morning</h4>
+          ${renderPublicTimeButtons(morningTimes, booking.time)}
+        </section>
+        <section>
+          <h4>Afternoon</h4>
+          ${renderPublicTimeButtons(afternoonTimes, booking.time)}
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+function renderPublicBookingCalendar(monthDate, selectedDate) {
+  const dates = publicMonthGridDates(monthDate);
+  const month = monthKey(monthDate);
+  return `
+    <div class="public-calendar">
+      ${["S", "M", "T", "W", "T", "F", "S"].map((day) => `<span class="public-weekday">${day}</span>`).join("")}
+      ${dates
+        .map((date) => {
+          const inMonth = monthKey(date) === month;
+          const available = publicDateHasAvailability(date);
+          const selected = date === selectedDate;
+          return `
+            <button
+              type="button"
+              class="public-date ${selected ? "selected" : ""} ${!inMonth ? "outside" : ""} ${available ? "available" : "unavailable"}"
+              data-action="public-select-date"
+              data-id="${date}"
+              ${available ? "" : "disabled"}
+            >
+              <span>${Number(date.slice(-2))}</span>
+              ${available ? `<i></i>` : ""}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function publicMonthGridDates(dateString) {
+  const date = new Date(`${dateString}T12:00:00`);
+  const first = new Date(date.getFullYear(), date.getMonth(), 1, 12);
+  first.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const next = new Date(first);
+    next.setDate(first.getDate() + index);
+    return next.toISOString().slice(0, 10);
+  });
+}
+
+function publicDateHasAvailability(date) {
+  const start = publicBookingStartDate();
+  const latest = addDays(start, Number(appSetting("bookingWindowDays", 14)));
+  return date >= start && date <= latest && bookingSlotTimes().some((time) => isSlotAvailable(date, time));
+}
+
+function renderPublicTimeButtons(times, selectedTime) {
+  return times.length
+    ? times
+        .map(
+          (time) => `
+            <button class="public-time-button ${time === selectedTime ? "selected" : ""}" type="button" data-action="public-select-time" data-id="${time}">
+              ${time}
+            </button>
+          `,
+        )
+        .join("")
+    : `<p class="meta">No slots</p>`;
+}
+
+function renderPublicDetailsStep(booking) {
+  return `
+    <form id="public-booking-form" class="public-details-form">
+      <input type="hidden" name="type" value="${escapeAttribute(booking.type || "Wedding consultation")}" data-booking-type />
+      <input type="hidden" name="date" value="${escapeAttribute(booking.date || "2026-05-26")}" data-booking-date />
+      <input type="hidden" name="time" value="${escapeAttribute(booking.time || "11:00")}" data-booking-time />
+      <p class="public-hold-message">We'll hold the slot occupied for <strong>9:58</strong></p>
+      <div class="public-field">
+        <label for="public-name">Full name</label>
+        <input id="public-name" name="name" required />
+      </div>
+      <div class="public-field phone">
+        <label for="public-phone">Phone number</label>
+        <div>
+          <span>🇬🇧 +44</span>
+          <input id="public-phone" name="phone" required inputmode="tel" />
+        </div>
+      </div>
+      <p class="public-consent">By creating this appointment, you acknowledge you will receive appointment reminders and special offers via text message. You may opt out at any time.</p>
+      <div class="public-field">
+        <input id="public-email" name="email" type="email" required placeholder="Email" />
+      </div>
+      <div class="public-field">
+        <textarea id="public-notes" name="notes" placeholder="What is your budget?"></textarea>
+      </div>
+    </form>
+  `;
+}
+
+function renderPublicBookingFooter(booking) {
+  const canContinue = booking.step === 1 ? Boolean(booking.type) : booking.step === 2 ? Boolean(booking.date && booking.time) : true;
+  const summary = booking.step === 1
+    ? "Choose services"
+    : booking.step === 2
+      ? `${publicServiceSummary(booking)} Total: £0`
+      : `${publicServiceSummary(booking)}. ${publicShortDate(booking.date)} at ${booking.time}. Total: £0`;
+  return `
+    <footer class="public-booking-footer">
+      <p>${escapeHtml(summary)}</p>
+      <button
+        class="${booking.step === 3 ? "public-complete-button" : "public-continue-button"}"
+        type="${booking.step === 3 ? "submit" : "button"}"
+        ${booking.step === 3 ? `form="public-booking-form"` : `data-action="public-next"`}
+        ${canContinue ? "" : "disabled"}
+      >
+        ${booking.step === 3 ? "Complete booking" : "Continue"}
+      </button>
+    </footer>
+  `;
+}
+
+function publicServiceSummary(booking) {
+  const service = publicBookingServices().find((item) => item.id === booking.type) || publicBookingServices()[0];
+  return `${service.title.replace("Request an ", "")} with Consultant.`;
+}
+
+function publicFullDate(dateString) {
+  return new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date(`${dateString}T12:00:00`));
+}
+
+function publicShortDate(dateString) {
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long" }).format(new Date(`${dateString}T12:00:00`));
+}
+
+function publicBookingStartDate() {
+  return todayKey() || DEMO_TODAY;
+}
+
+function publicBookingLatestDate() {
+  return addDays(publicBookingStartDate(), Number(appSetting("bookingWindowDays", 14)));
+}
+
 function bookingForm(id, publicMode = false) {
-  const defaultDate = publicMode ? addDays(DEMO_TODAY, 2) : DEMO_TODAY;
+  const today = businessToday();
+  const defaultDate = publicMode ? addDays(today, 2) : today;
   const defaultType = "Wedding consultation";
   return `
     <form id="${id}" class="form-grid">
@@ -4410,7 +4996,7 @@ function bookingForm(id, publicMode = false) {
       }
       <div class="field">
         <label for="${id}-date">Date</label>
-        <input id="${id}-date" name="date" type="date" required value="${defaultDate}" data-booking-date min="${DEMO_TODAY}" max="${addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)))}" />
+        <input id="${id}-date" name="date" type="date" required value="${defaultDate}" data-booking-date min="${today}" max="${addDays(today, Number(appSetting("bookingWindowDays", 14)))}" />
       </div>
       <div class="field">
         <label for="${id}-time">Time</label>
@@ -4457,7 +5043,7 @@ function bookingGuidance(type, date, publicMode = false, orderNumber = "") {
     if (!order) return "Order number not found. Check the order file number before booking.";
     return `This can be booked from ${formatDate(addDays(order.due, 1))} onwards.`;
   }
-  return `Consultations can be booked from ${formatDate(DEMO_TODAY)} to ${formatDate(addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14))))}.`;
+  return `Consultations can be booked from ${formatDate(publicBookingStartDate())} to ${formatDate(publicBookingLatestDate())}.`;
 }
 
 function requiresOrderNumber(type) {
@@ -4494,9 +5080,9 @@ function validateBookingRequest({ type, date, time, publicMode = false, orderNum
     if (date < earliest) return `Fittings and collections can only be booked from ${formatDate(earliest)} onwards for ${order.number}.`;
     return "";
   }
-  const latestConsultation = addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)));
-  if (date < DEMO_TODAY || date > latestConsultation) {
-    return `Consultations can only be booked up to ${appSetting("bookingWindowDays", 14)} days in advance, from ${formatDate(DEMO_TODAY)} to ${formatDate(latestConsultation)}.`;
+  const latestConsultation = publicBookingLatestDate();
+  if (date < publicBookingStartDate() || date > latestConsultation) {
+    return `Consultations can only be booked up to ${appSetting("bookingWindowDays", 14)} days in advance, from ${formatDate(publicBookingStartDate())} to ${formatDate(latestConsultation)}.`;
   }
   return "";
 }
@@ -4520,11 +5106,11 @@ function updateBookingAvailability(form) {
     dateInput.removeAttribute("max");
     if (dateInput.value && dateInput.value < dateInput.min) dateInput.value = dateInput.min;
   } else if (publicMode && !requiresOrderNumber(type)) {
-    dateInput.min = DEMO_TODAY;
-    dateInput.max = addDays(DEMO_TODAY, Number(appSetting("bookingWindowDays", 14)));
-    if (dateInput.value < dateInput.min || dateInput.value > dateInput.max) dateInput.value = addDays(DEMO_TODAY, 2);
+    dateInput.min = publicBookingStartDate();
+    dateInput.max = publicBookingLatestDate();
+    if (dateInput.value < dateInput.min || dateInput.value > dateInput.max) dateInput.value = addDays(publicBookingStartDate(), 1);
   }
-  if (timeInput) {
+  if (timeInput && timeInput.tagName === "SELECT") {
     const currentTime = timeInput.value;
     timeInput.innerHTML = bookingTimeOptions(dateInput.value, type, currentTime);
   }
@@ -4549,6 +5135,7 @@ function orderCard(order, editable = false, options = {}) {
   const overdue = orderOverdueMeta(order);
   const readyState = readyLocationState(order);
   const searchText = orderSearchText(order, customer);
+  const nextAction = nextActionForOrder(order);
   const inlineAction = options.action || "toggle-order";
   const cardAction = options.popupOnOpen ? "open-order-detail" : inlineAction;
   const cardLabel = options.popupOnOpen ? `Open ${order.number} details` : `Show ${order.number} details`;
@@ -4598,6 +5185,15 @@ function orderCard(order, editable = false, options = {}) {
       </div>
       <p class="meta">Sale by ${order.createdBy || "Unassigned"}</p>
       ${stockMeta ? `<p class="meta"><strong>Stock:</strong> ${stockMeta}</p>` : ""}
+      ${
+        nextAction
+          ? `<div class="next-action-strip">
+              <span>Next action</span>
+              <strong>${escapeHtml(nextAction.label)}</strong>
+              <small>${escapeHtml(nextAction.detail)}</small>
+            </div>`
+          : ""
+      }
       ${
         depositReminder
           ? `<p class="meta"><strong>50% reminder:</strong> ${depositReminder.status} ${formatDate(depositReminder.date)} • ${money(depositReminder.amountToHalf)} remaining</p>`
@@ -4704,6 +5300,32 @@ function orderCard(order, editable = false, options = {}) {
       }
     </article>
   `;
+}
+
+function nextActionForOrder(order) {
+  if (!order || ["Collected", "Cancelled"].includes(order.status)) return null;
+  const customer = getCustomer(order.customerId);
+  const target = Math.ceil(Number(order.total || 0) * (Number(appSetting("fittingPaymentTarget", 50)) / 100));
+  const amountToTarget = Math.max(target - Number(order.paid || 0), 0);
+  if (order.status === "Missing" || order.stockStatus === "Missing") {
+    return { label: "Resolve stock", detail: `${customer.name}'s order needs stock before it can move on.` };
+  }
+  if (amountToTarget > 0 && order.fittingDate) {
+    return { label: "Take deposit", detail: `${money(amountToTarget)} needed before fitting.` };
+  }
+  if (order.status === "Ready" && !order.fittingDate) {
+    return { label: "Book fitting", detail: "Stock is ready, so the customer needs a fitting appointment." };
+  }
+  if (order.status === "Fitting" && order.tailor !== "Aziz Tailoring") {
+    return { label: "Send to tailor", detail: "Fitting is complete and alterations need tracking." };
+  }
+  if (order.status === "At Tailor") {
+    return { label: "Check tailor return", detail: "Confirm alteration completion and move to ready for collection." };
+  }
+  if (order.status === "Ready for collection" && !order.collectionDate) {
+    return { label: "Book collection", detail: "Customer can now be booked in to collect." };
+  }
+  return { label: "Review order", detail: `Keep ${order.number} moving through the workflow.` };
 }
 
 function renderOrderDetailModal() {
@@ -5005,6 +5627,10 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function businessToday() {
+  return todayKey() || DEMO_TODAY;
+}
+
 function invoiceYears() {
   const years = state.invoices
     .map((invoice) => new Date(`${invoice.dueDate}T12:00:00`).getFullYear())
@@ -5256,6 +5882,11 @@ function bindEvents() {
     input.addEventListener("change", () => updateStockAlert(input.dataset.stockAlert, input.value));
   });
 
+  const importInput = document.querySelector("[data-import-data]");
+  if (importInput) {
+    importInput.addEventListener("change", handleDataImport);
+  }
+
   document.querySelectorAll("[data-stock-price]").forEach((input) => {
     input.addEventListener("click", (event) => event.stopPropagation());
     input.addEventListener("change", () => updateStockPrice(input.dataset.stockPrice, input.value));
@@ -5322,6 +5953,22 @@ function bindEvents() {
   if (searchInput) {
     searchInput.addEventListener("input", (event) => {
       state.search = event.target.value;
+      saveState();
+      render();
+    });
+  }
+
+  const globalSearchInput = document.querySelector("[data-global-search]");
+  if (globalSearchInput) {
+    globalSearchInput.addEventListener("input", (event) => {
+      state.globalSearch = event.target.value;
+      saveState();
+      render();
+      setTimeout(() => document.querySelector("[data-global-search]")?.focus(), 0);
+    });
+    globalSearchInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      state.globalSearch = "";
       saveState();
       render();
     });
@@ -5473,10 +6120,14 @@ function handleAction(button) {
   if (action === "toggle-priority-orders") togglePriorityOrders();
   if (action === "toggle-order") toggleOrderDetail(id);
   if (action === "toggle-all-order") toggleAllOrderDetail(id);
-  if (action === "open-order-detail") openOrderDetail(id);
+  if (action === "open-order-detail") {
+    state.globalSearch = "";
+    openOrderDetail(id);
+  }
   if (action === "scroll-order-stage") scrollToOrderStage(id);
   if (action === "open-order-stage") openOrderStage(button.dataset.status || "");
   if (action === "open-customer") {
+    state.globalSearch = "";
     openCustomerDetail(id);
   }
   if (action === "set-customer-tab") setCustomerTab(id);
@@ -5498,11 +6149,85 @@ function handleAction(button) {
   if (action === "record-payment") recordPayment(id);
   if (action === "print-invoice") printInvoicePdf();
   if (action === "lock-finance") lockFinance();
+  if (action === "export-data") exportPrototypeData();
+  if (action === "public-select-service") selectPublicService(id);
+  if (action === "public-select-date") selectPublicDate(id);
+  if (action === "public-select-time") selectPublicTime(id);
+  if (action === "public-next") publicBookingNext();
+  if (action === "public-back") publicBookingBack();
+  if (action === "public-month-prev") movePublicBookingMonth(-1);
+  if (action === "public-month-next") movePublicBookingMonth(1);
 }
 
 function openNewOrderForm(customerId = "", appointmentId = null, quoteId = "") {
   state.modal = { type: "order", customerId, appointmentId, quoteId };
   state.toast = "";
+  saveState();
+  render();
+}
+
+function selectPublicService(type) {
+  state.publicBooking = { ...publicBookingState(), type };
+  saveState();
+  render();
+}
+
+function selectPublicDate(date) {
+  const times = bookingSlotTimes().filter((time) => isSlotAvailable(date, time));
+  state.publicBooking = {
+    ...publicBookingState(),
+    date,
+    month: `${monthKey(date)}-01`,
+    time: times.includes(state.publicBooking?.time) ? state.publicBooking.time : times[0] || "",
+  };
+  saveState();
+  render();
+}
+
+function selectPublicTime(time) {
+  state.publicBooking = { ...publicBookingState(), time };
+  saveState();
+  render();
+}
+
+function publicBookingNext() {
+  const booking = publicBookingState();
+  if (booking.step === 1 && !booking.type) {
+    state.toast = "Select a service before continuing.";
+    saveState();
+    render();
+    return;
+  }
+  if (booking.step === 2 && (!booking.date || !booking.time)) {
+    state.toast = "Choose a date and time before continuing.";
+    saveState();
+    render();
+    return;
+  }
+  state.publicBooking = { ...booking, step: Math.min(3, booking.step + 1) };
+  state.toast = "";
+  saveState();
+  render();
+}
+
+function publicBookingBack() {
+  const booking = publicBookingState();
+  if (booking.step === 1) {
+    state.currentView = "dashboard";
+    saveState();
+    render();
+    return;
+  }
+  state.publicBooking = { ...booking, step: Math.max(1, booking.step - 1) };
+  state.toast = "";
+  saveState();
+  render();
+}
+
+function movePublicBookingMonth(direction) {
+  const booking = publicBookingState();
+  const month = addMonths(booking.month || `${monthKey(booking.date)}-01`, direction);
+  state.publicBooking = { ...booking, month: `${monthKey(month)}-01` };
   saveState();
   render();
 }
@@ -5522,7 +6247,7 @@ function declineQuotation(quoteId) {
   const quote = (state.quotations || []).find((item) => item.id === quoteId);
   if (!quote) return;
   quote.status = "Declined";
-  quote.updated = DEMO_TODAY;
+  quote.updated = businessToday();
   logCustomerCommunication({
     customerId: quote.customerId,
     title: "Quote declined",
@@ -5629,13 +6354,15 @@ function saveCustomerProfileFromOrderData(data) {
       event: eventName || "New quotation",
       notes: "Added while preparing a quotation.",
     });
+    logCustomerActivity(customer.id, "Customer", "Profile created", "Created while preparing a quote.");
   } else {
     customer.name = name || customer.name;
     customer.phone = phone || customer.phone;
     customer.email = email || customer.email;
     customer.address = address || customer.address;
     customer.event = eventName || customer.event;
-    customer.lastVisit = DEMO_TODAY;
+    customer.lastVisit = businessToday();
+    logCustomerActivity(customer.id, "Customer", "Profile updated", "Customer details or measurements were updated from the quote flow.");
   }
   ["chest", "waist", "hips", "inseam", "sleeve", "neck", "shoulder", "height"].forEach((measure) => {
     const value = String(data.get(measure) || "").trim();
@@ -5669,7 +6396,7 @@ function saveQuotationFromOrderData(data, customer) {
   const quote = existing || {
     id: createId("q"),
     number: nextDocumentNumber("QUO", state.quotations || [], "number", 1000),
-    createdDate: DEMO_TODAY,
+    createdDate: businessToday(),
   };
   Object.assign(quote, {
     customerId: customer.id,
@@ -5679,7 +6406,7 @@ function saveQuotationFromOrderData(data, customer) {
     discount,
     total,
     status: quote.status === "Invoiced" ? "Invoiced" : "Quoted",
-    updated: DEMO_TODAY,
+    updated: businessToday(),
   });
   if (!existing) state.quotations.unshift(quote);
   logCustomerCommunication({
@@ -5689,6 +6416,7 @@ function saveQuotationFromOrderData(data, customer) {
     channel: "Email + text",
     status: "Saved",
   });
+  logCustomerActivity(customer.id, "Quote", existing ? "Quote updated" : "Quote saved", `${quote.number} saved for ${money(total)}.`);
   return quote;
 }
 
@@ -5702,9 +6430,23 @@ function logCustomerCommunication({ customerId, title, message, channel = "Email
     direction,
     message,
     status,
+    date: businessToday(),
+    staff: currentStaffName(),
+  });
+}
+
+function logCustomerActivity(customerId, type, title, detail = "") {
+  state.activityLog = state.activityLog || [];
+  state.activityLog.unshift({
+    id: createId("act"),
+    customerId,
+    type,
+    title,
+    detail,
     date: DEMO_TODAY,
     staff: currentStaffName(),
   });
+  state.activityLog = state.activityLog.slice(0, 250);
 }
 
 function openStaffBookingForm() {
@@ -5765,11 +6507,11 @@ function openStaffDropdown(role = "senior") {
 function selectStaff(name, role = "senior") {
   const safeRole = role === "staff" ? "staff" : "senior";
   const clock = dailyStaffClock();
-  clock.date = DEMO_TODAY;
+  clock.date = businessToday();
   clock[safeRole] = { name, time: currentClockTime() };
   state.staffClock = clock;
   state.activeStaff = name;
-  state.clockedInDate = DEMO_TODAY;
+  state.clockedInDate = businessToday();
   state.staffDropdownOpen = false;
   state.staffDropdownRole = "";
   state.staffMembers = staffMembers().includes(name) ? staffMembers() : [...staffMembers(), name];
@@ -5809,9 +6551,56 @@ function signOutStaff() {
   render();
 }
 
+function serialisableState() {
+  const clean = cloneData(state);
+  clean.financeUnlocked = false;
+  clean.toast = "";
+  clean.modal = null;
+  clean.globalSearch = "";
+  clean.staffDropdownOpen = false;
+  return clean;
+}
+
+function exportPrototypeData() {
+  const data = JSON.stringify(serialisableState(), null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `tux-studio-backup-${todayKey()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  state.toast = "Backup exported.";
+  saveState();
+  render();
+}
+
+function handleDataImport(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const imported = JSON.parse(String(reader.result || "{}"));
+      state = normaliseInventoryState({ ...cloneData(seedState), ...imported, financeUnlocked: false, toast: "", modal: null });
+      allocateAllStock({ addHistory: false });
+      state.toast = "Backup imported.";
+      saveState();
+      render();
+    } catch {
+      state.toast = "That backup file could not be imported.";
+      saveState();
+      render();
+    }
+  };
+  reader.readAsText(file);
+}
+
 function assignTodaysBookingsToSenior(name) {
   state.appointments
-    .filter((appointment) => appointment.date === DEMO_TODAY && !["Attended", "Cancelled"].includes(appointment.status))
+    .filter((appointment) => appointment.date === businessToday() && !["Attended", "Cancelled"].includes(appointment.status))
     .forEach((appointment) => {
       appointment.staff = name;
     });
@@ -6199,8 +6988,8 @@ function handleOrderSubmit(event) {
     discount,
     paid,
     createdBy: saleStaff,
-    createdDate: "2026-05-01",
-    depositReminderDate: paid < Math.ceil(total / 2) ? addDays("2026-05-01", 7) : "",
+    createdDate: businessToday(),
+    depositReminderDate: paid < Math.ceil(total / 2) ? addDays(businessToday(), 7) : "",
     measurements: Object.fromEntries(
       ["chest", "waist", "hips", "inseam", "sleeve", "neck", "shoulder", "height"].map((measure) => [
         measure,
@@ -6209,15 +6998,15 @@ function handleOrderSubmit(event) {
     ),
     fittingDate,
     fittingTime,
-    updated: "2026-05-01",
+    updated: businessToday(),
     notes: String(data.get("notes") || "No notes").trim(),
     signature: {
       name: signatureName,
       approved: data.get("signatureApproved") === "on",
-      date: "2026-05-01",
+      date: businessToday(),
     },
     history: [
-      `Unprocessed 1 May by ${saleStaff}`,
+      `Unprocessed ${formatDate(businessToday())} by ${saleStaff}`,
       inventoryItems.length
         ? `Queued for stock allocation: ${orderInventoryItems.map((item) => item.label).join(", ")}`
         : "Custom order",
@@ -6239,7 +7028,7 @@ function handleOrderSubmit(event) {
           {
             amount: paid,
             method: String(data.get("method") || "Manual payment"),
-            date: "2026-05-01",
+            date: businessToday(),
             createdBy: saleStaff,
           },
         ]
@@ -6281,6 +7070,8 @@ function handleOrderSubmit(event) {
     channel: "Email + text",
     status: "Sent",
   });
+  logCustomerActivity(customer.id, "Order", "Order created", `${order.number} created from ${quote.number}.`);
+  logCustomerActivity(customer.id, "Invoice", "Invoice emailed", `${invoice.number} sent for ${money(total)}. Deposit paid: ${money(paid)}.`);
   state.selectedCustomerId = customer.id;
   state.currentView = "orders";
   state.modal = { type: "invoice-pdf", customerId: customer.id, orderId: order.id, invoiceId: invoice.id };
@@ -6358,7 +7149,11 @@ function handleBookingSubmit(event) {
     reminderDate: dayBefore(date),
     orderId: findOrderByNumber(String(data.get("orderNumber") || ""))?.id || "",
   });
+  logCustomerActivity(customer.id, "Booking", publicMode ? "Booking requested" : "Staff booking created", `${type} booked for ${formatDate(date)} at ${time}.`);
   state.selectedCustomerId = customer.id;
+  if (publicMode) {
+    state.publicBooking = cloneData(seedState.publicBooking);
+  }
   state.toast = publicMode
     ? "Booking request sent. Email and text confirmation sent."
     : "Staff booking created. Email and text confirmation sent.";
@@ -6377,12 +7172,14 @@ function handleCustomCommsSubmit(event) {
   state.customComms.unshift({
     id: createId("comm"),
     customerId: customer.id,
+    title: "Custom communication",
     channel: String(data.get("channel") || "Email + text"),
     direction: String(data.get("direction") || "Outbound"),
     message,
-    date: DEMO_TODAY,
+    date: businessToday(),
     staff: currentStaffName(),
   });
+  logCustomerActivity(customer.id, "Comms", "Custom communication logged", message);
   state.toast = `Logged communication for ${customer.name}.`;
   saveState();
   render();
@@ -6480,6 +7277,7 @@ function handleFittingRecordSubmit(event) {
   order.fittingRecord = record;
   order.history = order.history || [];
   order.history.unshift(`Fitting notes saved ${formatDate(record.updated)} by ${record.updatedBy}`);
+  logCustomerActivity(order.customerId, "Fitting", "Fitting record saved", `${order.number} fitting notes updated${priority ? " and marked priority" : ""}.`);
   state.toast = `Fitting record saved for ${order.number}.`;
   saveState();
   render();
@@ -6657,7 +7455,7 @@ function addCustomer(customer) {
     email: customer.email,
     address: "Not collected",
     event: customer.event,
-    lastVisit: "2026-05-01",
+    lastVisit: businessToday(),
     notes: customer.notes,
     measurements: {
       chest: "-",
@@ -6680,9 +7478,10 @@ function updateOrderStatus(orderId, status) {
   const previousStatus = order.status;
   order.status = normaliseOrderStatus(status);
   if (order.status === "Ready") order.readyLocation = order.readyLocation || "in-store";
-  order.updated = "2026-05-01";
+  order.updated = businessToday();
   order.tailor = order.status === "At Tailor" ? "Aziz Tailoring" : order.status === "Ready for collection" ? "Returned" : order.tailor;
-  order.history.push(`${order.status} 1 May by ${currentStaffName()}`);
+  order.history.push(`${order.status} ${formatDate(businessToday())} by ${currentStaffName()}`);
+  logCustomerActivity(order.customerId, "Order", "Status changed", `${order.number} moved from ${previousStatus} to ${order.status}.`);
   if (order.inventoryItemId) {
     const item = state.inventory.find((stock) => stock.id === order.inventoryItemId);
     if (item) {
@@ -6702,9 +7501,10 @@ function updateOrderField(orderId, field, value) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
   order[field] = value;
-  order.updated = "2026-05-01";
+  order.updated = businessToday();
   order.history = order.history || [];
-  order.history.push(`${titleCase(field)} updated 1 May by ${currentStaffName()}`);
+  order.history.push(`${titleCase(field)} updated ${formatDate(businessToday())} by ${currentStaffName()}`);
+  logCustomerActivity(order.customerId, "Order", `${titleCase(field)} updated`, `${order.number} ${titleCase(field).toLowerCase()} changed.`);
   if (field === "due") {
     const invoice = state.invoices.find((item) => item.orderId === order.id);
     if (invoice) invoice.dueDate = value;
@@ -6720,7 +7520,7 @@ function updateOrderField(orderId, field, value) {
 
 function createBookingForCustomer(customerId) {
   const customer = getCustomer(customerId);
-  const date = "2026-05-03";
+  const date = addDays(businessToday(), 1);
   state.appointments.push({
     id: createId("a"),
     customerId,
@@ -6737,6 +7537,7 @@ function createBookingForCustomer(customerId) {
   });
   state.currentView = "bookings";
   state.modal = null;
+  logCustomerActivity(customer.id, "Booking", "Booking created", `Measurements appointment booked for ${formatDate(date)}.`);
   state.toast = `Booking created for ${customer.name} and assigned to ${currentStaffName()}.`;
   saveState();
   render();
@@ -6746,6 +7547,7 @@ function updateAppointmentStatus(id, status) {
   const appointment = state.appointments.find((item) => item.id === id);
   if (!appointment) return;
   appointment.status = status;
+  logCustomerActivity(appointment.customerId, "Appointment", "Appointment status changed", `${appointment.type} appointment marked ${status}.`);
   state.toast = `${appointment.name}'s appointment is now ${status.toLowerCase()}.`;
   saveState();
   render();
@@ -6755,7 +7557,8 @@ function sendAppointmentReminder(id) {
   const appointment = state.appointments.find((item) => item.id === id);
   if (!appointment) return;
   appointment.reminderStatus = "Manual reminder sent";
-  appointment.reminderDate = "2026-05-01";
+  appointment.reminderDate = businessToday();
+  logCustomerActivity(appointment.customerId, "Comms", "Manual reminder sent", `${appointment.type} reminder marked as sent.`);
   state.toast = `Manual reminder marked as sent for ${appointment.name}.`;
   saveState();
   render();
@@ -6764,7 +7567,7 @@ function sendAppointmentReminder(id) {
 function moveCalendar(direction) {
   const mode = state.calendarMode || "day";
   const amount = mode === "month" ? direction * 30 : mode === "week" ? direction * 7 : direction;
-  state.calendarDate = addDays(state.calendarDate || "2026-05-01", amount);
+  state.calendarDate = addDays(state.calendarDate || businessToday(), amount);
   saveState();
   render();
 }
@@ -6790,6 +7593,7 @@ function scheduleNoSaleFollowUp(appointmentId) {
       status: "Scheduled",
     });
   }
+  logCustomerActivity(customer.id, "Follow-up", "No-sale follow-up scheduled", `Follow-up scheduled for ${formatDate(due)}.`);
   state.toast = `Follow-up scheduled for ${customer.name} on ${formatDate(due)}.`;
   saveState();
   render();
@@ -6810,7 +7614,7 @@ function collectToHalf(orderId) {
   const method = prompt("Payment method: cash, card, bank transfer, or other.", "Card");
   if (!method) return;
   order.paid += amount;
-  order.history.push(`50% payment reached 1 May`);
+  order.history.push(`50% payment reached ${formatDate(businessToday())}`);
   const invoice = state.invoices.find((item) => item.orderId === order.id);
   if (invoice) {
     const payments = invoicePayments(invoice);
@@ -6820,10 +7624,11 @@ function collectToHalf(orderId) {
     invoice.payments.push({
       amount,
       method,
-      date: "2026-05-01",
+      date: businessToday(),
       createdBy: staffName,
     });
   }
+  logCustomerActivity(order.customerId, "Payment", "Deposit collected", `${money(amount)} collected by ${method}.`);
   state.toast = `Collected ${money(amount)} by ${method} so ${order.number} has reached 50%. Staff: ${staffName}.`;
   saveState();
   render();
@@ -6855,6 +7660,7 @@ function bookCollection(orderId) {
       orderId: order.id,
     });
   }
+  logCustomerActivity(customer.id, "Collection", "Collection booked", `${order.number} collection booked for ${formatDate(collectionDate)}.`);
   state.toast = `Collection booked for ${customer.name} on ${formatDate(collectionDate)}.`;
   saveState();
   render();
@@ -6917,11 +7723,12 @@ function recordPayment(invoiceId) {
   invoice.payments.push({
     amount: applied,
     method,
-    date: "2026-05-01",
+    date: businessToday(),
     createdBy: staffName,
   });
   const order = state.orders.find((item) => item.id === invoice.orderId);
   if (order) order.paid = Math.min(order.total, order.paid + applied);
+  logCustomerActivity(invoice.customerId, "Payment", "Payment recorded", `${money(applied)} recorded on ${invoice.number} by ${method}.`);
   state.toast = `Recorded ${money(applied)} by ${method} on ${invoice.number}. Staff: ${staffName}.`;
   saveState();
   render();
