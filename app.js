@@ -14,6 +14,7 @@ const orderStatuses = [
 const DEMO_TODAY = "2026-05-01";
 const FINANCE_PASSWORD = "owner2026";
 const STOCK_ALLOCATION_MONTHS = 3;
+const PUBLIC_SLOT_HOLD_MS = 10 * 60 * 1000;
 
 const seedState = {
   currentView: "dashboard",
@@ -26,6 +27,7 @@ const seedState = {
     date: "2026-05-26",
     time: "",
     month: "2026-05-01",
+    holdExpiresAt: 0,
   },
   search: "",
   calendarMode: "day",
@@ -54,6 +56,12 @@ const seedState = {
     defaultReminder: "Day before",
     financeAccess: "Owner only",
     invoicePassword: FINANCE_PASSWORD,
+    bookingLogicText:
+      "Customers can only book free consultation slots inside this window. Fittings and collections require an order number and start from the day after the order due date.",
+    orderWorkflowText:
+      "Orders inside the rolling window are allocated by due-date priority. Missing stock stays urgent, ready orders need a staff-set location, and fitting payment target is checked before fitting.",
+    financeVisibilityText:
+      "Order-level balances remain visible to staff. Main invoice reports stay locked behind finance access.",
   },
   activeStaff: "",
   clockedInDate: "",
@@ -466,6 +474,7 @@ let state = normaliseInventoryState(loadState());
 let renderRecoveryAttempted = false;
 let toastTimer = null;
 let clockTimer = null;
+let publicHoldTimer = null;
 allocateAllStock({ addHistory: false });
 
 const navItems = [
@@ -710,6 +719,7 @@ function render() {
       centerActiveCustomerProfileTab();
       scheduleToastClear();
       startStickyClock();
+      startPublicHoldTimer();
     } catch (bindError) {
       console.error("Tux Studio OS interaction setup error", bindError);
     }
@@ -797,6 +807,41 @@ function startStickyClock() {
   updateStickyClock();
   if (clockTimer) return;
   clockTimer = setInterval(updateStickyClock, 30000);
+}
+
+function publicHoldRemainingMs(booking = publicBookingState()) {
+  return Math.max(0, Number(booking.holdExpiresAt || 0) - Date.now());
+}
+
+function publicHoldExpired(booking = publicBookingState()) {
+  return booking.step === 3 && Number(booking.holdExpiresAt || 0) > 0 && publicHoldRemainingMs(booking) <= 0;
+}
+
+function formatPublicHoldTime(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function updatePublicHoldTimer() {
+  const timer = document.querySelector("[data-public-hold-timer]");
+  if (!timer) return;
+  const remaining = Math.max(0, Number(timer.dataset.expiresAt || 0) - Date.now());
+  timer.textContent = formatPublicHoldTime(remaining);
+  timer.classList.toggle("expired", remaining <= 0);
+  const completeButton = document.querySelector("[data-public-complete-booking]");
+  if (completeButton) completeButton.disabled = remaining <= 0;
+}
+
+function startPublicHoldTimer() {
+  if (publicHoldTimer) {
+    clearInterval(publicHoldTimer);
+    publicHoldTimer = null;
+  }
+  if (!document.querySelector("[data-public-hold-timer]")) return;
+  updatePublicHoldTimer();
+  publicHoldTimer = setInterval(updatePublicHoldTimer, 1000);
 }
 
 function minutesFromTime(value) {
@@ -2562,19 +2607,7 @@ function renderDashboard() {
   const tasks = nextActionQueue({ seniorAccess }).slice(0, seniorAccess ? 8 : 5);
 
   return `
-    <section class="panel task-queue-panel ${seniorAccess ? "senior-task-queue" : "staff-task-queue"}">
-      <div class="panel-header">
-        <div>
-          <h3 class="panel-title">${seniorAccess ? "Senior next actions" : "My next actions"}</h3>
-          <p class="panel-subtitle">${seniorAccess ? "Appointments plus finance, stock, allocation, and operational priorities for the shop." : "Appointment and customer tasks staff can act on today."}</p>
-        </div>
-        <span class="status paid">${tasks.length} live</span>
-      </div>
-      <div class="task-queue-list">
-        ${tasks.map(taskQueueCard).join("") || emptyState("No next actions right now.")}
-      </div>
-    </section>
-    <section class="dashboard-main-grid" id="today-bookings">
+    <section class="dashboard-stack" id="today-bookings">
       <div class="panel dashboard-bookings-panel">
         <div class="panel-header">
           <div>
@@ -2587,6 +2620,18 @@ function renderDashboard() {
           ${todaysAppointments.map(dashboardAppointmentCard).join("") || emptyState(`No bookings scheduled for ${formatDate(today)}.`)}
         </div>
       </div>
+      <section class="panel task-queue-panel ${seniorAccess ? "senior-task-queue" : "staff-task-queue"}">
+        <div class="panel-header">
+          <div>
+            <h3 class="panel-title">${seniorAccess ? "Senior next actions" : "My next actions"}</h3>
+            <p class="panel-subtitle">${seniorAccess ? "Appointments plus finance, stock, allocation, and operational priorities for the shop." : "Appointment and customer tasks staff can act on today."}</p>
+          </div>
+          <span class="status paid">${tasks.length} live</span>
+        </div>
+        <div class="task-queue-list">
+          ${tasks.map(taskQueueCard).join("") || emptyState("No next actions right now.")}
+        </div>
+      </section>
       <div class="panel dashboard-attention-panel">
         <div class="panel-header">
           <div>
@@ -4402,7 +4447,7 @@ function renderSettings() {
           </div>
           <div class="settings-summary-card full">
             <strong>Current logic</strong>
-            <span>Customers can only book free consultation slots inside this window. Fittings and collections require an order number and start from the day after the order due date.</span>
+            <textarea name="bookingLogicText" rows="3">${escapeHtml(settings.bookingLogicText || seedState.settings.bookingLogicText)}</textarea>
           </div>
           <div class="form-actions">
             <button class="ghost-button" type="submit">${icon("check")} Save booking rules</button>
@@ -4434,7 +4479,7 @@ function renderSettings() {
           </div>
           <div class="settings-summary-card full">
             <strong>Current workflow</strong>
-            <span>Orders inside the rolling window are allocated by due-date priority. Missing stock stays urgent, ready orders need a staff-set location, and fitting payment target is checked before fitting.</span>
+            <textarea name="orderWorkflowText" rows="3">${escapeHtml(settings.orderWorkflowText || seedState.settings.orderWorkflowText)}</textarea>
           </div>
           <div class="form-actions">
             <button class="ghost-button" type="submit">${icon("check")} Save stock rules</button>
@@ -4462,7 +4507,7 @@ function renderSettings() {
           </div>
           <div class="settings-summary-card full">
             <strong>Operational balance visibility</strong>
-            <span>Order-level balances remain visible to staff. Main invoice reports stay locked behind finance access.</span>
+            <textarea name="financeVisibilityText" rows="3">${escapeHtml(settings.financeVisibilityText || seedState.settings.financeVisibilityText)}</textarea>
           </div>
           <div class="form-actions">
             <button class="ghost-button" type="submit">${icon("check")} Save finance settings</button>
@@ -4721,6 +4766,11 @@ function renderFinanceAccessGate() {
 
 function renderBookingPortal() {
   const booking = publicBookingState();
+  if (booking.step === 3 && !Number(booking.holdExpiresAt || 0)) {
+    booking.holdExpiresAt = Date.now() + PUBLIC_SLOT_HOLD_MS;
+    state.publicBooking = { ...booking };
+    saveState();
+  }
   return `
     <div class="public-shell booking-flow-shell" style="${brandStyleVars()}">
       <header class="public-booking-header">
@@ -4811,7 +4861,7 @@ function renderPublicDateTimeStep(booking) {
         </div>
       </div>
       ${renderPublicBookingCalendar(monthDate, selectedDate)}
-      <h3>Available on ${publicFullDate(selectedDate)} (BST)</h3>
+      <h3 id="public-available-times">Available on ${publicFullDate(selectedDate)} (BST)</h3>
       <div class="public-time-grid">
         <section>
           <h4>Morning</h4>
@@ -4887,12 +4937,15 @@ function renderPublicTimeButtons(times, selectedTime) {
 }
 
 function renderPublicDetailsStep(booking) {
+  const holdExpiresAt = Number(booking.holdExpiresAt || 0);
+  const holdRemaining = holdExpiresAt ? publicHoldRemainingMs(booking) : 0;
   return `
     <form id="public-booking-form" class="public-details-form">
       <input type="hidden" name="type" value="${escapeAttribute(booking.type || "Wedding consultation")}" data-booking-type />
       <input type="hidden" name="date" value="${escapeAttribute(booking.date || "2026-05-26")}" data-booking-date />
       <input type="hidden" name="time" value="${escapeAttribute(booking.time || "11:00")}" data-booking-time />
-      <p class="public-hold-message">We'll hold the slot occupied for <strong>9:58</strong></p>
+      <p class="public-hold-message">We'll hold the slot for <strong data-public-hold-timer data-expires-at="${holdExpiresAt}">${formatPublicHoldTime(holdRemaining)}</strong></p>
+      <p class="public-selected-slot">Chosen appointment: <strong>${publicFullDate(booking.date)} at ${escapeHtml(booking.time || "Not selected")}</strong></p>
       <div class="public-field">
         <label for="public-name">Full name</label>
         <input id="public-name" name="name" required />
@@ -4909,14 +4962,18 @@ function renderPublicDetailsStep(booking) {
         <input id="public-email" name="email" type="email" required placeholder="Email" />
       </div>
       <div class="public-field">
-        <textarea id="public-notes" name="notes" placeholder="What is your budget?"></textarea>
+        <label for="public-event-date">Event day</label>
+        <input id="public-event-date" name="eventDate" type="date" required />
+      </div>
+      <div class="public-field">
+        <textarea id="public-notes" name="notes" required placeholder="What is your budget?"></textarea>
       </div>
     </form>
   `;
 }
 
 function renderPublicBookingFooter(booking) {
-  const canContinue = booking.step === 1 ? Boolean(booking.type) : booking.step === 2 ? Boolean(booking.date && booking.time) : true;
+  const canContinue = booking.step === 1 ? Boolean(booking.type) : booking.step === 2 ? Boolean(booking.date && booking.time) : !publicHoldExpired(booking);
   const summary = booking.step === 1
     ? "Choose services"
     : booking.step === 2
@@ -4929,6 +4986,7 @@ function renderPublicBookingFooter(booking) {
         class="${booking.step === 3 ? "public-complete-button" : "public-continue-button"}"
         type="${booking.step === 3 ? "submit" : "button"}"
         ${booking.step === 3 ? `form="public-booking-form"` : `data-action="public-next"`}
+        ${booking.step === 3 ? `data-public-complete-booking` : ""}
         ${canContinue ? "" : "disabled"}
       >
         ${booking.step === 3 ? "Complete booking" : "Continue"}
@@ -6179,13 +6237,21 @@ function selectPublicDate(date) {
     date,
     month: `${monthKey(date)}-01`,
     time: times.includes(state.publicBooking?.time) ? state.publicBooking.time : times[0] || "",
+    holdExpiresAt: 0,
   };
   saveState();
   render();
+  setTimeout(scrollPublicTimesIntoView, 0);
+}
+
+function scrollPublicTimesIntoView() {
+  const target = document.getElementById("public-available-times");
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function selectPublicTime(time) {
-  state.publicBooking = { ...publicBookingState(), time };
+  state.publicBooking = { ...publicBookingState(), time, holdExpiresAt: 0 };
   saveState();
   render();
 }
@@ -6204,7 +6270,12 @@ function publicBookingNext() {
     render();
     return;
   }
-  state.publicBooking = { ...booking, step: Math.min(3, booking.step + 1) };
+  const nextStep = Math.min(3, booking.step + 1);
+  state.publicBooking = {
+    ...booking,
+    step: nextStep,
+    holdExpiresAt: booking.step === 2 && nextStep === 3 ? Date.now() + PUBLIC_SLOT_HOLD_MS : booking.holdExpiresAt || 0,
+  };
   state.toast = "";
   saveState();
   render();
@@ -6218,7 +6289,7 @@ function publicBookingBack() {
     render();
     return;
   }
-  state.publicBooking = { ...booking, step: Math.max(1, booking.step - 1) };
+  state.publicBooking = { ...booking, step: Math.max(1, booking.step - 1), holdExpiresAt: booking.step === 3 ? 0 : booking.holdExpiresAt || 0 };
   state.toast = "";
   saveState();
   render();
@@ -7104,7 +7175,15 @@ function handleBookingSubmit(event) {
   const type = String(data.get("type") || "");
   const date = String(data.get("date") || "");
   const time = String(data.get("time") || "");
+  const eventDate = String(data.get("eventDate") || "");
+  const notes = String(data.get("notes") || "").trim();
   const publicMode = form.id.includes("public");
+  if (publicMode && publicHoldExpired(publicBookingState())) {
+    state.toast = "This slot hold has expired. Choose the time again to continue.";
+    saveState();
+    render();
+    return;
+  }
   const validationError = validateBookingRequest({
     type,
     date,
@@ -7124,13 +7203,14 @@ function handleBookingSubmit(event) {
       name,
       phone,
       email: email || "Not provided",
-      event: "New enquiry",
-      notes: "Added from booking form.",
+      event: publicMode && eventDate ? `Event - ${formatDate(eventDate)}` : "New enquiry",
+      notes: publicMode ? `Added from booking form.${eventDate ? ` Event day: ${formatDate(eventDate)}.` : ""}${notes ? ` Budget/note: ${notes}` : ""}` : "Added from booking form.",
     });
   if (existing) {
     existing.name = name || existing.name;
     existing.phone = phone || existing.phone;
     existing.email = email || existing.email;
+    if (publicMode && eventDate) existing.event = `Event - ${formatDate(eventDate)}`;
     existing.lastVisit = date;
   }
 
@@ -7143,7 +7223,7 @@ function handleBookingSubmit(event) {
     time,
     staff: publicMode ? "Unassigned" : currentStaffName(),
     status: publicMode ? "Pending" : "Confirmed",
-    notes: String(data.get("notes") || "No notes"),
+    notes: [eventDate ? `Event day: ${formatDate(eventDate)}` : "", notes || "No notes"].filter(Boolean).join(" • "),
     confirmationStatus: "Email + text sent",
     reminderStatus: "Scheduled",
     reminderDate: dayBefore(date),
@@ -7388,6 +7468,7 @@ function handleSettingsRulesSubmit(event) {
     ...(state.settings || {}),
     bookingWindowDays: Math.max(1, Number(data.get("bookingWindowDays") || 14)),
     defaultReminder: String(data.get("defaultReminder") || "Day before"),
+    bookingLogicText: String(data.get("bookingLogicText") || seedState.settings.bookingLogicText).trim() || seedState.settings.bookingLogicText,
   };
   state.toast = "Booking rules updated.";
   saveState();
@@ -7403,6 +7484,7 @@ function handleSettingsStockSubmit(event) {
     stockAllocationDay: String(data.get("stockAllocationDay") || "Tuesday"),
     stockAllocationMonths: Math.max(1, Number(data.get("stockAllocationMonths") || STOCK_ALLOCATION_MONTHS)),
     fittingPaymentTarget: Math.min(100, Math.max(0, Number(data.get("fittingPaymentTarget") || 50))),
+    orderWorkflowText: String(data.get("orderWorkflowText") || seedState.settings.orderWorkflowText).trim() || seedState.settings.orderWorkflowText,
   };
   allocateAllStock();
   state.toast = "Order and inventory rules updated.";
@@ -7418,6 +7500,7 @@ function handleSettingsFinanceSubmit(event) {
     ...(state.settings || {}),
     financeAccess: String(data.get("financeAccess") || "Owner only"),
     invoicePassword: String(data.get("invoicePassword") || FINANCE_PASSWORD).trim() || FINANCE_PASSWORD,
+    financeVisibilityText: String(data.get("financeVisibilityText") || seedState.settings.financeVisibilityText).trim() || seedState.settings.financeVisibilityText,
   };
   state.toast = "Finance settings updated.";
   saveState();
